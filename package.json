@@ -1,0 +1,40 @@
+{
+  "name": "dsh-llm-fallback",
+  "version": "0.1.0",
+  "description": "DSH plugin: LLM provider fallback / failover for Cordis",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<你的用户名>/dsh-llm-fallback.git"
+  },
+  "keywords": [
+    "cordis",
+    "dsh",
+    "llm",
+    "fallback",
+    "failover"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "cordis": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "cordis": "^1.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
