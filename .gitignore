@@ -11,3 +11,4 @@ lib
 *.crt
 profile.yaml
 secrets.*
+*.tgz
