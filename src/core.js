@@ -96,6 +96,22 @@ export function routeUnavailable(provider, model, cooldowns, usage, cfg) {
  * @param {object} cfg - { arkThreshold, skipUltimateByUsage }
  * @returns {{provider:string, model:string}|null}
  */
+/**
+ * 校验并归一化 chain 数组(拖拽排序持久化的新顺序)。
+ * @param {unknown} value
+ * @returns {Array<{provider:string, model:string}>|null} 合法返回数组,否则 null
+ */
+export function validateChain(value) {
+  if (!Array.isArray(value)) return null
+  const out = []
+  for (const item of value) {
+    if (item && typeof item === 'object' && typeof item.provider === 'string' && typeof item.model === 'string') {
+      out.push({ provider: item.provider, model: item.model })
+    }
+  }
+  return out.length > 0 ? out : null
+}
+
 export function pickFallbackTarget(skipProvider, skipModel, chain, cooldowns, usage, cfg) {
   const usable = (route, i) =>
     i === chain.length - 1 && !cfg.skipUltimateByUsage
