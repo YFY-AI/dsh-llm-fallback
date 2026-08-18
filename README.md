@@ -58,7 +58,31 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | `skipUltimateByUsage` | `boolean` | `false` | ultimate 路由是否也受可用性约束 |
 | `stripReasoningFor` | `string[]` | 商汤/幻城 | 自动去掉 reasoning effort 的渠道 |
 | `statusPath` | `string` | `/api/llm-fallback/status` | 状态 API 路径 |
+| `chainFile` | `string` | `~/.dsh/plugins/llm-fallback/chain.json` | 拖拽排序持久化文件(优先级高于 config.chain) |
 | `apiKey` | `string` | - | 余额查询 key(默认读 `DEEPSEEK_API_KEY`) |
+
+## 侧边栏「模型渠道」Tab
+
+安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「模型渠道」Tab 并自动打开:
+
+- **卡片式布局**:渠道族分组(火山方舟/商汤/幻城/DeepSeek),全部使用 DSH 主题变量(`--dsw-alias-*`),**自动适配所有皮肤**
+- **当前渠道**:顶部胶囊显示当前优先渠道 + 状态点
+- **拖拽排序**:拖动 `⋮⋮` 手柄调整回退优先级 → `POST /api/llm-fallback/chain` **热生效**(回退立即按新顺序)+ 持久化到 `chain.json`
+- **冷却倒计时**:熔断渠道实时显示剩余时间(1s 刷新)
+- **用量条**:方舟 5h 用量进度条(≥85% 红 / ≥60% 黄 / 绿)
+- 数据通道:`GET /api/llm-fallback/status`(10s 轮询)
+
+### 顺序持久化(chain.json)
+
+拖拽后的新顺序写入 `~/.dsh/plugins/llm-fallback/chain.json`(可配 `chainFile`),**优先级高于 cordis.patch.yml 的 `chain` 字段**;启动时自动加载,重启保留。删除该文件即回到配置文件里的顺序。
+
+### 热重载说明
+
+| 操作 | 是否重启 |
+|------|----------|
+| 拖拽调整顺序 / 修改配置 | ✅ 热生效,零重启(走 API) |
+| 改 client 代码(Tab UI) | ✅ 刷新浏览器页面即可(不用重启 dsh web) |
+| 改 host 代码(回退逻辑) | ⚠️ 需重启 dsh web,或 DSH 官方 `cordis_run mode:"update"` 热激活 |
 
 ## 用量监测(火山方舟,零 Token)
 

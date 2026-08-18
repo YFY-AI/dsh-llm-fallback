@@ -9,8 +9,8 @@
 //   - `ctx.webServer.register({kind, path, handler})` 提供状态 API(与 WebUI 同服务器)。
 
 import z from '@deepseek-ai/schemastery'
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import {
@@ -20,6 +20,7 @@ import {
   pickFallbackTarget,
   providerFamily,
   routeUnavailable,
+  validateChain,
 } from './core.js'
 
 export const name = 'dsh-llm-fallback'
@@ -60,6 +61,7 @@ export const Config = z.object({
   arkUsedPercentThreshold: z.number().default(85),
   skipUltimateByUsage: z.boolean().default(false),
   statusPath: z.string().default('/api/llm-fallback/status'),
+  chainFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'chain.json')),
   sensenovaRateLimitCooldownMs: z.number().default(5 * 60 * 1000),
   stripReasoningFor: z.array(z.string()).default([
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
@@ -68,9 +70,41 @@ export const Config = z.object({
   apiKey: z.string(),
 })
 
+/** 读取持久化的 chain 顺序(chainFile);缺失/损坏返回 null。 */
+function loadChainFile(chainFile) {
+  try {
+    if (!chainFile || !existsSync(chainFile)) return null
+    const raw = readFileSync(chainFile, 'utf8')
+    const clean = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+    return validateChain(JSON.parse(clean))
+  } catch {
+    return null
+  }
+}
+
+/** 写入持久化的 chain 顺序(原子:先写临时文件再 rename)。 */
+function saveChainFile(chainFile, chain) {
+  try {
+    mkdirSync(dirname(chainFile), { recursive: true })
+    const tmp = `${chainFile}.tmp`
+    writeFileSync(tmp, JSON.stringify(chain, null, 2), 'utf8')
+    // rename 跨设备可能失败,失败则直接写目标
+    try { renameSync(tmp, chainFile) } catch { writeFileSync(chainFile, JSON.stringify(chain, null, 2), 'utf8') }
+  } catch (error) {
+    // 持久化失败不阻断热更新(内存已生效),仅记日志
+    console.warn(`[dsh-llm-fallback] chain persist failed: ${String(error)}`)
+  }
+}
+
 export function apply(ctx, config) {
   const resolved = Config['~standard'].validate(config ?? {}).value ?? {}
-  const chain = resolved.chain
+  // chain 可变:拖拽排序通过 POST /api/llm-fallback/chain 热更新 + 持久化到 chainFile
+  let chain = resolved.chain
+  {
+    // 启动时优先加载 chainFile(拖拽持久化的顺序,优先级高于 config.chain)
+    const saved = loadChainFile(resolved.chainFile)
+    if (saved) chain = saved
+  }
   const codes = new Set(resolved.codes)
   const labels = resolved.codeLabels
   const usageFile = resolved.usageFile
@@ -221,6 +255,28 @@ export function apply(ctx, config) {
       handler: (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
         res.end(JSON.stringify(buildStatus()))
+      },
+    })
+    // POST /api/llm-fallback/chain — 拖拽排序热更新(内存立即生效 + 持久化 chainFile)
+    disposeStatusRoute = webServer.register({
+      kind: 'exact',
+      path: '/api/llm-fallback/chain',
+      handler: (req, res) => {
+        let body = ''
+        req.on('data', (chunk) => { body += chunk })
+        req.on('end', () => {
+          const send = (status, obj) => {
+            res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify(obj))
+          }
+          let parsed
+          try { parsed = JSON.parse(body || '{}') } catch { return send(400, { ok: false, error: 'invalid json' }) }
+          const next = validateChain(parsed?.chain)
+          if (!next) return send(400, { ok: false, error: 'chain must be a non-empty array of {provider, model}' })
+          chain = next // 热更新:回退逻辑立即按新顺序
+          saveChainFile(resolved.chainFile, next)
+          send(200, { ok: true, chain })
+        })
       },
     })
   } catch (error) {

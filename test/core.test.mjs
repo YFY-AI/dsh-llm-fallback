@@ -8,6 +8,7 @@ import {
   pickFallbackTarget,
   providerFamily,
   routeUnavailable,
+  validateChain,
 } from '../lib/core.js'
 
 // ── providerFamily ──
@@ -136,5 +137,20 @@ assert.deepEqual(
   { provider: 'deepseek-official', model: 'v4' },
 )
 console.log('✔ pickFallbackTarget')
+
+// ── validateChain ──
+assert.equal(validateChain(null), null)
+assert.equal(validateChain('x'), null)
+assert.equal(validateChain([]), null)
+assert.equal(validateChain([{ provider: 'a' }]), null)
+assert.deepEqual(
+  validateChain([{ provider: 'a', model: 'm1' }, { bad: true }, { provider: 'b', model: 'm2' }]),
+  [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }],
+)
+assert.deepEqual(
+  validateChain([{ provider: 'sensenova-1', model: 'flash' }, { provider: 'hcnsec-1', model: 'pro' }]),
+  [{ provider: 'sensenova-1', model: 'flash' }, { provider: 'hcnsec-1', model: 'pro' }],
+)
+console.log('✔ validateChain')
 
 console.log('\nCORE TESTS OK')
