@@ -48,7 +48,7 @@ export const Config = z.object({
     { provider: 'sensenova-3', model: 'glm-5.2' },
     { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
   ]),
-  codes: z.array(z.string()).default(['QUOTA', 'RATE_LIMIT', 'SERVER']),
+  codes: z.array(z.string()).default(['QUOTA', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
   codeLabels: z.dict(z.string()).default({
     QUOTA: '额度不足或欠费',
     RATE_LIMIT: '调用次数超限',
