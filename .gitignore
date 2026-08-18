@@ -12,3 +12,5 @@ lib
 profile.yaml
 secrets.*
 *.tgz
+
+*.bak
