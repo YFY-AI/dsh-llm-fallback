@@ -1,41 +1,56 @@
 # dsh-llm-fallback
 
-DSH / Cordis plugin providing **LLM provider fallback (failover)** capability.
+DeepSeek Harness LLM 回替链 + 余额查询插件
 
-## Install
+## 功能
+
+- LLM 提供商回退机制（failover）
+- 支持多个提供商按优先级切换
+- 内置 DeepSeek 账户余额查询命令
+- 完全兼容 Cordis 插件系统
+
+## 安装
 
 ```bash
-npm i dsh-llm-fallback
+npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 ```
 
-## Usage
+## 使用
 
 ```ts
 import { createApp } from 'cordis'
-import dshLlmFallback from 'dsh-llm-fallback'
+import dshLlmFallback from '@yfy-ai/dsh-llm-fallback'
 
 const app = createApp()
+
 app.plugin(dshLlmFallback, {
-  // 配置项见下文
+  providers: ['ark', 'openai', 'ollama'], // 优先级顺序
+  timeout: 30000,
+  retries: 2,
+  healthCheck: true
 })
 ```
 
-## Configuration
+## 配置选项
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `providers` | `string[]` | `[]` | 优先级顺序的提供商标识（如 `['ark', 'openai', 'ollama']`） |
-| `timeout` | `number` | `30000` | 单次请求超时（ms） |
+| 选项 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `providers` | `string[]` | `[]` | 提供商优先级列表 |
+| `timeout` | `number` | `30000` | 超时时间（ms） |
 | `retries` | `number` | `2` | 单提供商重试次数 |
-| `healthCheck` | `boolean` | `true` | 是否启用健康探测 |
+| `healthCheck` | `boolean` | `true` | 启用健康探测 |
 
-## How it works
+## 命令
 
-1. 按 `providers` 顺序尝试调用
-2. 单提供商失败（超时 / 错误 / 熔断）自动切换下一个
-3. 可选健康探测：定期探测并维护可用列表
-4. 所有调用对上层透明，统一返回标准 Cordis LLM 服务接口
+- `llm-fallback balance` — 查询当前 DeepSeek 账户余额
+
+## 开发
+
+```bash
+npm install
+npm run pack
+```
 
 ## License
 
-MIT
+MIT © YFY-AI
