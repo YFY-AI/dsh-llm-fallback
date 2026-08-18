@@ -1,13 +1,14 @@
 {
   "name": "@yfy-ai/dsh-llm-fallback",
-  "version": "0.3.0",
-  "description": "DeepSeek Harness LLM 回替链 + 余额查询",
+  "version": "0.4.0",
+  "description": "DeepSeek Harness LLM 回替链 + 余额查询 + 侧边栏状态",
   "author": "YFY-AI",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -16,12 +17,16 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-client.mjs",
     "test": "node test/smoke.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "dsh": {
-    "runtime": "host"
+    "runtime": "host",
+    "client": {
+      "platform": "web",
+      "inject": ["slots"]
+    }
   },
   "engines": {
     "dsh": ">=0.0.1",

@@ -10,6 +10,7 @@ DeepSeek Harness LLM 回替链 + 余额查询插件
 - **DSH 命令**:
   - `/llm-fallback-balance` — 查询 DeepSeek 账户余额
   - `/llm-fallback-status` — 查看回替链状态(当前 provider / 健康 / 熔断)
+- **侧边栏「回替链」Tab**(需已装 `dsh-better-sidebar`):实时显示当前渠道与各 provider 健康/延迟/熔断状态,SSE 事件推送即时刷新
 
 ## 安装
 
@@ -73,6 +74,14 @@ const result = await app.llmFallback.chat([{ role: 'user', content: 'hi' }])
 | `circuitBreaker.cooldown` | `number` | `30000` | 熔断冷却时长(ms) |
 | `apiKey` | `string` | - | 余额查询 key(默认读 `DEEPSEEK_API_KEY`) |
 
+## 侧边栏「回替链」Tab
+
+安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「🔀 回替链」Tab 并自动打开:
+
+- **当前渠道**:回替链当前优先的 provider(最近成功者)
+- **状态表**:各 provider 健康 / 延迟 / 熔断状态
+- **数据通道**:host 提供 `GET /api/llm-fallback/snapshot`(初始快照)与 `GET /api/llm-fallback/events`(SSE 事件推送),provider 切换、失败、熔断、恢复时即时刷新,无需轮询
+
 ## 开发
 
 ```bash
@@ -86,12 +95,16 @@ npm run pack
 
 ```
 src/
-├── index.ts        # 插件入口:挂载 ctx.llmFallback + 注册 DSH 命令
-├── host.ts         # LlmFallbackService:回替/超时/健康/熔断核心
+├── index.ts        # 插件入口:挂载 ctx.llmFallback + 注册 DSH 命令 + SSE/snapshot 端点
+├── host.ts         # LlmFallbackService:回替/超时/健康/熔断核心(含事件订阅)
 ├── types.ts        # LlmMessage / LlmProvider / ProviderHealth
 └── commands/
     ├── balance.ts  # /llm-fallback-balance
     └── status.ts   # /llm-fallback-status
+client/
+└── client.js       # 侧边栏「回替链」Tab(DSH __ModuleLoader__ bundle,SSE 实时刷新)
+scripts/
+└── copy-client.mjs # 构建时把 client bundle 复制到 lib/
 ```
 
 Provider 以"鸭子类型"识别:任何带 `name` + `chat()` 的服务(经 `ctx[name] = value` 赋值)都会被 `internal/service` 事件自动跟踪。
