@@ -1,8 +1,12 @@
 # dsh-llm-fallback
 
-**DSH 请求管线级多渠道自动回退**(usage 感知 / 分级冷却 / 渠道族优先)+ 侧边栏「模型渠道」Tab。
+**DSH 请求管线级多渠道自动回退** — 完整适配 **DeepSeek Harness EAC 桌面版**与 Web 版
 
-在 DSH 的 `agent/request` 管线层面工作:任一渠道触发 `QUOTA` / `RATE_LIMIT` / `SERVER` 时,当前步骤自动重试到链上第一个可用渠道,并对用户显示一条切换通知。
+在 DSH 的 `agent/request` 管线层面工作:任一渠道触发 `QUOTA` / `RATE_LIMIT` / `SERVER` 时,当前步骤自动重试到链上第一个可用渠道,并对用户显示一条切换通知。例如:
+
+```
+[系统提示] 额度不足或欠费（DeepSeek 官方），当前步骤已自动切换到 claude-opus-4.8-free（nexusvai）（依据：额度重置）继续执行。
+```
 
 ## 功能
 
@@ -13,7 +17,7 @@
 - **自动跳过冷却渠道**:用户手动选的 provider/model 正在冷却时,请求自动重定向到首个可用渠道
 - **输出截断避让(v0.7.0)**:某渠道 `turn/end` 达到输出 token 上限后进入截断冷却(默认 30min,可配 `truncateCooldownMs`),**下一次请求(包括用户点"继续")自动切到下一可用渠道**,避免反复截断;侧边栏显示「截断」标记
 - **`stripReasoningFor`**:商汤/幻城等不支持 reasoning effort 的渠道自动去掉该字段
-- **侧边栏「模型渠道」Tab**(需 `dsh-better-sidebar`):渠道状态(冷却/用量/当前渠道),10s 轮询
+- **侧边栏「模型渠道」Tab**(需 `dsh-better-sidebar`):卡片式渠道状态,支持拖拽排序、冷却倒计时、截断标记、方舟用量条;**Web 版与 EAC 桌面版均可使用**
 - **命令**:`/llm-fallback-balance` 查询 DeepSeek 账户余额
 - **状态 API**:`GET /api/llm-fallback/status`(JSON,供侧边栏与外部消费)
 
@@ -23,7 +27,7 @@
 npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 ```
 
-在 DSH 插件配置(`~/.dsh/profiles/<profile>/cordis.patch.yml`)启用:
+本插件完整适配 **DeepSeek Harness EAC 桌面版**和标准 Web 版。在 DSH 插件配置(`~/.dsh/profiles/<profile>/cordis.patch.yml`)启用:
 
 ```yaml
 - insert:
@@ -41,6 +45,8 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
             model: deepseek-v4-flash
         codes: [QUOTA, RATE_LIMIT, SERVER]
 ```
+
+> **EAC 桌面版用户**:`cordis.patch.yml` 位于 `~/.dsh/profiles/web-desktop/`(与 Web 版共享同一配置结构,chain 等字段完全兼容)。侧边栏「模型渠道」Tab 在桌面版 Better-Sidebar 中同样自动打开,所有功能一致。
 
 ## 配置选项
 
@@ -66,12 +72,13 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 
 ## 侧边栏「模型渠道」Tab
 
-安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「模型渠道」Tab 并自动打开:
+安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「模型渠道」Tab 并自动打开(**Web 版与 EAC 桌面版均支持**):
 
 - **卡片式布局**:渠道族分组(火山方舟/商汤/幻城/DeepSeek),全部使用 DSH 主题变量(`--dsw-alias-*`),**自动适配所有皮肤**
 - **当前渠道**:顶部胶囊显示当前优先渠道 + 状态点
 - **拖拽排序**:拖动 `⋮⋮` 手柄调整回退优先级 → `POST /api/llm-fallback/chain` **热生效**(回退立即按新顺序)+ 持久化到 `chain.json`
 - **冷却倒计时**:熔断渠道实时显示剩余时间(1s 刷新)
+- **截断标记**:输出 token 达到上限的渠道自动标记「截断」,后续请求自动避让
 - **用量条**:方舟 5h 用量进度条(≥85% 红 / ≥60% 黄 / 绿)
 - 数据通道:`GET /api/llm-fallback/status`(10s 轮询)
 
@@ -84,8 +91,20 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | 操作 | 是否重启 |
 |------|----------|
 | 拖拽调整顺序 / 修改配置 | ✅ 热生效,零重启(走 API) |
-| 改 client 代码(Tab UI) | ✅ 刷新浏览器页面即可(不用重启 dsh web) |
-| 改 host 代码(回退逻辑) | ⚠️ 需重启 dsh web,或 DSH 官方 `cordis_run mode:"update"` 热激活 |
+| 改 client 代码(Tab UI) | ✅ 刷新浏览器页面即可(不用重启 dsh we;EAC 桌面版按 `Ctrl+R` 刷新) |
+| 改 host 代码(回退逻辑) | ⚠️ 需重启 dsh web / EAC 桌面版,或 DSH 官方 `cordis_run mode:"update"` 热激活 |
+
+## 工作示例
+
+插件在渠道切换时以系统通知形式告知用户,以下是实际运行中的通知示例:
+
+> `[系统提示] 额度不足或欠费(DeepSeek 官方),当前步骤已自动切换到 claude-opus-4.8-free(nexusvai)(依据:额度重置)继续执行。`
+
+> `[系统提示] 调用次数超限(商汤日日新①),当前步骤已自动切换到 glm-5.2(商汤日日新①)(依据:短时限流)继续执行。`
+
+> `[系统提示] 调用次数超限(商汤日日新①),当前步骤已自动切换到 deepseek-v4-flash(商汤日日新②)(依据:短时限流)继续执行。`
+
+通知文案包含:失败码(QUOTA / RATE_LIMIT / SERVER)、失败渠道、目标渠道、切换依据(冷却原因)。侧边栏「模型渠道」Tab 同步显示各渠道的冷却/截断/用量状态。
 
 ## 用量监测(火山方舟,零 Token)
 
@@ -102,22 +121,26 @@ powershell -File node_modules/@yfy-ai/dsh-llm-fallback/tools/monitor-usage.ps1
 
 1. `cordis.patch.yml` 中把 `name: ./plugins/dsh-llm-fallback.mjs` 改为 `name: '@yfy-ai/dsh-llm-fallback'`(config 的 `chain` 等结构**无需修改**,schema 完全一致)
 2. **删除** `dsh-client-ui-ark-status` 的 insert 条目(侧边栏 Tab 已内置,重复注册会冲突)
-3. 重启 `dsh web`
+3. 重启 `dsh web`(或 EAC 桌面版完全退出后重新打开)
 4. (可选)删除旧文件 `~/.dsh/profiles/<profile>/plugins/dsh-llm-fallback.mjs`
+
+> EAC 桌面版用户的 `cordis.patch.yml` 位于 `~/.dsh/profiles/web-desktop/`,迁移步骤完全相同。
 
 ## 架构
 
 ```
 src/
-├── index.js    # 入口:agent/request + agent/request-error 监听、usage/冷却状态、状态 API、balance 命令
-└── core.js     # 纯函数:渠道族 / 冷却计算 / 路由选择(可独立测试)
+├── index.js    # 入口:agent/request + agent/request-error 监听、usage/冷却/截断状态、状态 API、balance 命令
+└── core.js     # 纯函数:渠道族 / 冷却计算 / 路由选择 / 截断避让(可独立测试)
 client/
 └── client.js   # 侧边栏「模型渠道」Tab(DSH __ModuleLoader__ bundle,10s 轮询状态 API)
 tools/
 └── monitor-usage.ps1   # 火山方舟用量监测(零 Token)
 test/
-└── core.test.mjs       # core.js 纯函数单元测试
+└── core.test.mjs       # core.js 纯函数单元测试(8 组)
 ```
+
+所有功能同时支持 **DeepSeek Harness EAC 桌面版**与标准 Web 版,零配置差异。
 
 ## 开发
 
@@ -131,3 +154,7 @@ npm run pack
 ## License
 
 MIT © YFY-AI
+
+---
+
+*适配 DeepSeek Harness EAC 桌面版与标准 Web 版,零配置差异。*
