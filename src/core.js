@@ -1,0 +1,123 @@
+// dsh-llm-fallback core:纯函数回退决策逻辑(从生产 mjs 抽取,可独立测试)。
+// 不依赖任何外部状态:cooldowns / usage / chain 全部显式传入。
+
+/**
+ * 渠道族:同族优先回退(商汤①→②③、火山①→②),跨族只作最后手段。
+ */
+export function providerFamily(provider) {
+  if (provider.startsWith('volcengine-ark')) return 'volcengine'
+  if (provider.startsWith('hcnsec')) return 'hcnsec'
+  if (provider.startsWith('sensenova')) return 'sensenova'
+  return provider
+}
+
+/** 渠道显示名(状态 API / 侧边栏 / UI 通知)。 */
+export function displayNameOf(provider) {
+  const map = {
+    'volcengine-ark': '火山方舟①',
+    'volcengine-ark-2': '火山方舟②',
+    'hcnsec-1': '幻城网安①',
+    'hcnsec-2': '幻城网安②',
+    'sensenova-1': '商汤日日新①',
+    'sensenova-2': '商汤日日新②',
+    'sensenova-3': '商汤日日新③',
+    'deepseek-official': 'DeepSeek 官方',
+  }
+  return map[provider] ?? provider
+}
+
+export function cooldownKey(provider, model) {
+  return provider + '|' + model
+}
+
+/**
+ * 计算某失败的冷却截止时间与原因。
+ * @param {object} cfg - { quotaCooldownMs, serverCooldownMs, rateLimitCooldownMs, sensenovaRateLimitCooldownMs }
+ * @param {object|null} usage - 当前 usage 快照(QUOTA 时用于取 5h 重置时间)
+ */
+export function cooldownFor(code, provider, model, failure, cfg, usage) {
+  if (failure?.providerRetryAfterMs && Number.isFinite(failure.providerRetryAfterMs) && failure.providerRetryAfterMs > 0) {
+    return { until: Date.now() + failure.providerRetryAfterMs, reason: '上游指定重试时间' }
+  }
+  if (code === 'QUOTA') {
+    const w5 = usage?.ark?.['5h']?.reset_at
+    if (w5) {
+      const reset = Date.parse(w5)
+      if (Number.isFinite(reset)) return { until: reset, reason: '额度重置' }
+    }
+    return { until: Date.now() + cfg.quotaCooldownMs, reason: '额度不足' }
+  }
+  if (code === 'SERVER') {
+    // 500 多为厂商端临时故障,短冷却避免频繁重试同一渠道
+    return { until: Date.now() + cfg.serverCooldownMs, reason: '服务端错误' }
+  }
+  // RATE_LIMIT 通常是短时限流(并发/频率),不是额度耗尽。
+  // 商汤 Token Plan 的 RATE_LIMIT 也多为瞬时限制——用短冷却,
+  // 避免把仍有额度的渠道长时间误冷却。真正的额度耗尽会表现为 QUOTA。
+  if (provider.startsWith('sensenova-')) {
+    return { until: Date.now() + cfg.sensenovaRateLimitCooldownMs, reason: '短时限流' }
+  }
+  return { until: Date.now() + cfg.rateLimitCooldownMs, reason: '限流冷却' }
+}
+
+/**
+ * 路由是否当前不可用(冷却中 / 火山方舟额度耗尽 / 商汤非 ok)。
+ * @param {Map} cooldowns - cooldownKey -> { until, reason }
+ * @param {object|null} usage - usage 快照
+ * @param {object} cfg - { arkThreshold }
+ */
+export function routeUnavailable(provider, model, cooldowns, usage, cfg) {
+  const key = cooldownKey(provider, model)
+  const cool = cooldowns.get(key)
+  if (cool && cool.until > Date.now()) return true
+  if (provider.startsWith('volcengine-ark')) {
+    const ark = usage?.ark
+    if (ark) {
+      const w5 = ark['5h']
+      if (w5 && typeof w5.percent === 'number' && w5.percent >= cfg.arkThreshold) return true
+    }
+  }
+  if (provider.startsWith('sensenova-')) {
+    const idx = provider.replace('sensenova-', '')
+    const s = usage?.sensenova?.[idx]
+    if (s && s.status !== 'ok') return true
+  }
+  return false
+}
+
+/**
+ * 选择回退目标:优先级 1 同 provider 其它 model → 2 同渠道族其它 provider → 3 跨族按链序。
+ * 链末位(ultimate)默认永远可用,避免真实失败被吞成死循环。
+ * @param {string} skipProvider - 刚失败的 provider
+ * @param {string} skipModel - 刚失败的 model
+ * @param {Array} chain - [{ provider, model }, ...]
+ * @param {Map} cooldowns
+ * @param {object|null} usage
+ * @param {object} cfg - { arkThreshold, skipUltimateByUsage }
+ * @returns {{provider:string, model:string}|null}
+ */
+export function pickFallbackTarget(skipProvider, skipModel, chain, cooldowns, usage, cfg) {
+  const usable = (route, i) =>
+    i === chain.length - 1 && !cfg.skipUltimateByUsage
+      ? true
+      : !routeUnavailable(route.provider, route.model, cooldowns, usage, cfg)
+  const family = providerFamily(skipProvider)
+  // 优先级 1:同 provider 的其它 model(商汤① flash → 商汤① glm)
+  for (let i = 0; i < chain.length; i++) {
+    const route = chain[i]
+    if (route.provider === skipProvider && route.model !== skipModel && usable(route, i)) return route
+  }
+  // 优先级 2:同渠道族其它 provider(商汤① → 商汤②③;火山① → 火山②)
+  for (let i = 0; i < chain.length; i++) {
+    const route = chain[i]
+    if (route.provider !== skipProvider && providerFamily(route.provider) === family && usable(route, i)) return route
+  }
+  // 优先级 3:跨族,按链顺序(商汤全挂 → 幻城 → 官方)
+  for (let i = 0; i < chain.length; i++) {
+    const route = chain[i]
+    if (route.provider === skipProvider && route.model === skipModel) continue
+    if (providerFamily(route.provider) === family) continue
+    if (usable(route, i)) return route
+  }
+  return chain[chain.length - 1] ?? null
+}

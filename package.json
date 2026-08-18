@@ -1,7 +1,7 @@
 {
   "name": "@yfy-ai/dsh-llm-fallback",
-  "version": "0.4.0",
-  "description": "DeepSeek Harness LLM 回替链 + 余额查询 + 侧边栏状态",
+  "version": "0.5.0",
+  "description": "DSH 请求管线级多渠道自动回退(usage 感知/分级冷却/渠道族优先)+ 侧边栏模型渠道",
   "author": "YFY-AI",
   "license": "MIT",
   "type": "module",
@@ -13,19 +13,24 @@
   },
   "files": [
     "lib",
+    "tools",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-client.mjs",
-    "test": "node test/smoke.mjs",
+    "build": "node scripts/copy.mjs",
+    "test": "node test/core.test.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "dsh": {
     "runtime": "host",
     "client": {
       "platform": "web",
-      "inject": ["slots"]
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   },
   "engines": {
@@ -35,12 +40,11 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com/"
   },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "peerDependencies": {
     "cordis": "^1.0.0"
   },
-  "devDependencies": {
-    "@types/node": "^20.19.43",
-    "cordis": "^1.0.0",
-    "typescript": "^5.0.0"
-  }
+  "devDependencies": {}
 }
