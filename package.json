@@ -43,8 +43,5 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
   },
-  "peerDependencies": {
-    "cordis": "^1.0.0"
-  },
   "devDependencies": {}
 }
