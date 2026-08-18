@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import {
+  avoidTruncated,
   cooldownFor,
   cooldownKey,
   displayNameOf,
@@ -52,6 +53,7 @@ export const Config = z.object({
     QUOTA: '额度不足或欠费',
     RATE_LIMIT: '调用次数超限',
     SERVER: '服务端错误',
+    MAX_TOKENS: '输出达到 token 上限',
   }),
   usageFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'ark-fallback', 'usage.json')),
   usageRefreshMs: z.number().default(60000),
@@ -62,6 +64,10 @@ export const Config = z.object({
   skipUltimateByUsage: z.boolean().default(false),
   statusPath: z.string().default('/api/llm-fallback/status'),
   chainFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'chain.json')),
+  /** 输出截断冷却:渠道被 turn/end max-tokens 标记后,此期间请求自动避让 */
+  truncateCooldownMs: z.number().default(30 * 60 * 1000),
+  /** 是否启用"截断自动避让"(下次请求自动切到下一可用渠道) */
+  autoAvoidTruncation: z.boolean().default(true),
   sensenovaRateLimitCooldownMs: z.number().default(5 * 60 * 1000),
   stripReasoningFor: z.array(z.string()).default([
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
@@ -165,6 +171,25 @@ export function apply(ctx, config) {
   const currentRoutes = new Map()
   // 每 agent 最近派发路由(request-error 冷却精确 model 用,payload 只带 provider)
   const lastRouteByAgent = new WeakMap()
+  // 每 session 最近派发路由(turn/end max-tokens 用,session/event 只有 session 无 agent)
+  const lastRouteBySession = new WeakMap()
+  // 截断冷却:cooldownKey(provider|model) -> until(turn/end max-tokens 时记录)
+  const truncated = new Map()
+
+  // 监听轮次结束:输出截断(max-tokens)时记录渠道,后续请求自动避让
+  const disposeTurnEnd = ctx.on('session/event', (subject, event) => {
+    if (!resolved.autoAvoidTruncation) return
+    if (event?.type !== 'turn/end') return
+    const reason = event.data?.reason
+    if (reason?.kind !== 'max-tokens') return
+    const route = lastRouteBySession.get(subject)
+    if (!route?.provider) return
+    const until = Date.now() + resolved.truncateCooldownMs
+    truncated.set(cooldownKey(route.provider, route.model), until)
+    ctx.logger?.info?.(
+      `[dsh-llm-fallback] ${displayNameOf(route.provider)} ${route.model} hit output token cap; will avoid for ${Math.round(resolved.truncateCooldownMs / 60000)}min`,
+    )
+  })
 
   function cooldownForCode(code, provider, model, failure) {
     return cooldownFor(code, provider, model, failure, coreCfg, usage)
@@ -221,6 +246,7 @@ export function apply(ctx, config) {
   function providerState(route) {
     const cool = cooldowns.get(cooldownKey(route.provider, route.model))
     const out = outcomes.get(route.provider)
+    const trunc = truncated.get(cooldownKey(route.provider, route.model))
     return {
       provider: route.provider,
       model: route.model,
@@ -228,6 +254,8 @@ export function apply(ctx, config) {
       cooling: cool && cool.until > Date.now(),
       cooldownUntil: cool?.until ?? null,
       cooldownReason: cool?.reason ?? null,
+      truncated: trunc !== undefined && trunc > Date.now(),
+      truncatedUntil: trunc ?? null,
       lastOkAt: out?.lastOkAt ?? null,
       lastFailAt: out?.lastFailAt ?? null,
       lastCode: out?.lastCode ?? null,
@@ -327,6 +355,17 @@ export function apply(ctx, config) {
           nextConfig = { ...nextConfig, provider: fallback.provider, model: fallback.model }
         }
       }
+      // 截断避让:当前渠道在截断冷却内(上轮 max-tokens 截断)自动切下一可用渠道
+      if (resolved.autoAvoidTruncation && nextConfig.provider && nextConfig.model) {
+        const alt = avoidTruncated(nextConfig.provider, nextConfig.model, chain, cooldowns, truncated, coreCfg)
+        if (alt && (alt.provider !== nextConfig.provider || alt.model !== nextConfig.model)) {
+          const from = `${displayNameOf(nextConfig.provider)} ${nextConfig.model}`
+          nextConfig = { ...nextConfig, provider: alt.provider, model: alt.model }
+          try {
+            appendNotice(payload.agent, 'MAX_TOKENS', nextConfig.provider, alt, `上轮输出截断(${from})`)
+          } catch { /* notice 失败不阻断 */ }
+        }
+      }
       // 不支持 reasoning effort 的渠道去掉该字段(商汤/幻城)
       if (nextConfig.reasoningEffort && stripReasoningFor.has(nextConfig.provider)) {
         delete nextConfig.reasoningEffort
@@ -334,6 +373,10 @@ export function apply(ctx, config) {
       // 不在此清冷却(请求尚未发出);只更新当前渠道并记录派发路由
       recordSuccess(nextConfig.provider, nextConfig.model ?? '', payload.agent)
       lastRouteByAgent.set(payload.agent, {
+        provider: nextConfig.provider,
+        model: nextConfig.model ?? '',
+      })
+      lastRouteBySession.set(payload.agent.session, {
         provider: nextConfig.provider,
         model: nextConfig.model ?? '',
       })
@@ -387,6 +430,7 @@ export function apply(ctx, config) {
   return () => {
     disposeError()
     disposeRequest()
+    disposeTurnEnd()
     disposeTimer?.()
     disposeStatusRoute()
     disposeBalance?.()

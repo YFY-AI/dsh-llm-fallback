@@ -2,6 +2,7 @@
 // 运行:node test/core.test.mjs(构建后 lib/core.js;测试直接引 src 亦可)
 import assert from 'node:assert/strict'
 import {
+  avoidTruncated,
   cooldownFor,
   cooldownKey,
   displayNameOf,
@@ -152,5 +153,44 @@ assert.deepEqual(
   [{ provider: 'sensenova-1', model: 'flash' }, { provider: 'hcnsec-1', model: 'pro' }],
 )
 console.log('✔ validateChain')
+
+// ── avoidTruncated(截断避让) ──
+const truncChain = [
+  { provider: 'volcengine-ark', model: 'flash' },
+  { provider: 'hcnsec-1', model: 'pro' },
+  { provider: 'deepseek-official', model: 'v4' },
+]
+const truncCfg = { arkThreshold: 85, skipUltimateByUsage: false }
+// 未标记 → 不切换
+assert.equal(avoidTruncated('volcengine-ark', 'flash', truncChain, new Map(), new Map(), truncCfg), null)
+// 标记后 → 切到下一条可用渠道
+const tr = new Map([['volcengine-ark|flash', Date.now() + 600_000]])
+assert.deepEqual(
+  avoidTruncated('volcengine-ark', 'flash', truncChain, new Map(), tr, truncCfg),
+  { provider: 'hcnsec-1', model: 'pro' },
+)
+// 冷却已过期 → 不切换
+const trExpired = new Map([['volcengine-ark|flash', Date.now() - 1000]])
+assert.equal(avoidTruncated('volcengine-ark', 'flash', truncChain, new Map(), trExpired, truncCfg), null)
+// 当前渠道+中间渠道被截断 → 切到未截断的末位(ultimate 兜底)
+const trAll = new Map([
+  ['volcengine-ark|flash', Date.now() + 600_000],
+  ['hcnsec-1|pro', Date.now() + 600_000],
+])
+assert.deepEqual(
+  avoidTruncated('volcengine-ark', 'flash', truncChain, new Map(), trAll, truncCfg),
+  { provider: 'deepseek-official', model: 'v4' },
+)
+// 当前渠道是链末位且全部被截断 + skipUltimateByUsage → 无替代,返回 null
+const trLast = new Map([
+  ['volcengine-ark|flash', Date.now() + 600_000],
+  ['hcnsec-1|pro', Date.now() + 600_000],
+  ['deepseek-official|v4', Date.now() + 600_000],
+])
+assert.equal(
+  avoidTruncated('deepseek-official', 'v4', truncChain, new Map(), trLast, { ...truncCfg, skipUltimateByUsage: true }),
+  null,
+)
+console.log('✔ avoidTruncated')
 
 console.log('\nCORE TESTS OK')

@@ -80,7 +80,7 @@ window.__ModuleLoader__.load({
     }
     function dotClass(entry) {
       if (entry && entry.cooling) return "llmf2-dot-down";
-      if (entry && entry.lastFailAt && (!entry.lastOkAt || entry.lastFailAt > entry.lastOkAt)) return "llmf2-dot-warn";
+      if (entry && (entry.truncated || (entry.lastFailAt && (!entry.lastOkAt || entry.lastFailAt > entry.lastOkAt)))) return "llmf2-dot-warn";
       return "llmf2-dot-ok";
     }
     function reorder(list, from, to) {
@@ -206,6 +206,7 @@ window.__ModuleLoader__.load({
             ),
             h("div", { className: "llmf2-meta" },
               usage,
+              entry.truncated ? h("span", { className: "llmf2-cool", title: "上轮输出达到 token 上限,此期间自动避让" }, "截断") : null,
               cooling ? h("span", { className: "llmf2-cool" }, cooling) : null
             )
           );

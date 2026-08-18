@@ -137,3 +137,31 @@ export function pickFallbackTarget(skipProvider, skipModel, chain, cooldowns, us
   }
   return chain[chain.length - 1] ?? null
 }
+
+/**
+ * 截断避让:当前渠道在"截断冷却"内时,返回替代路由(下一条可用渠道)。
+ * 截断冷却由 host 在 turn/end max-tokens 时记录;下次请求(含用户"继续")
+ * 自动避开该渠道,避免反复截断。
+ * @param {string} provider - 当前解析的 provider
+ * @param {string} model - 当前解析的 model
+ * @param {Array} chain
+ * @param {Map} cooldowns - 熔断冷却(与截断无关,透传给 pickFallbackTarget)
+ * @param {Map} truncated - cooldownKey -> until(截断冷却)
+ * @param {object} cfg - { arkThreshold, skipUltimateByUsage }
+ * @returns {{provider:string, model:string}|null} 替代路由;无需切换返回 null
+ */
+export function avoidTruncated(provider, model, chain, cooldowns, truncated, cfg) {
+  const key = cooldownKey(provider, model)
+  const until = truncated.get(key)
+  if (!until || until <= Date.now()) return null
+  // 截断标记并入可用性判断:被截断的渠道视为"冷却中",选择时跳过
+  const now = Date.now()
+  const merged = new Map(cooldowns)
+  for (const [k, t] of truncated) {
+    if (t > now && !merged.has(k)) merged.set(k, { until: t, reason: 'truncated' })
+  }
+  const alt = pickFallbackTarget(provider, model, chain, merged, null, cfg)
+  if (!alt) return null
+  if (alt.provider === provider && alt.model === model) return null
+  return alt
+}
