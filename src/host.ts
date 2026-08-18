@@ -55,6 +55,8 @@ export class LlmFallbackService {
   private currentName: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private disposed = false
+  /** 状态变化订阅者(侧边栏 SSE 推送等) */
+  private readonly listeners = new Set<() => void>()
 
   constructor(ctx: Context, config: LlmFallbackConfig = {}) {
     this.ctx = ctx
@@ -85,9 +87,35 @@ export class LlmFallbackService {
       clearInterval(this.timer)
       this.timer = null
     }
+    this.listeners.clear()
     this.providers.clear()
     this.health.clear()
     this.currentName = null
+  }
+
+  /** 订阅状态变化(provider 跟踪 / 成功 / 失败 / 熔断 / 切换)。返回退订函数。 */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /** 当前状态快照(供 SSE 推送与侧边栏渲染) */
+  getSnapshot(): {
+    current: string | null
+    providers: ProviderHealth[]
+    updatedAt: number
+  } {
+    return {
+      current: this.currentName,
+      providers: this.healthList,
+      updatedAt: Date.now(),
+    }
+  }
+
+  private notify(): void {
+    for (const fn of [...this.listeners]) {
+      try { fn() } catch { /* 订阅者异常不影响主流程 */ }
+    }
   }
 
   // ── provider 收集 ────────────────────────────────────────────────
@@ -109,6 +137,7 @@ export class LlmFallbackService {
     })
     if (!this.currentName) this.currentName = providerName
     this.log('info', `tracked provider "${providerName}" (total ${this.providers.size})`)
+    this.notify()
   }
 
   /**
@@ -175,6 +204,7 @@ export class LlmFallbackService {
       downUntil: undefined,
     })
     this.currentName = provider.name
+    this.notify()
   }
 
   private recordFailure(provider: LlmProvider, error: unknown): void {
@@ -197,6 +227,7 @@ export class LlmFallbackService {
     if (tripped && prev.downUntil === undefined) {
       this.log('warn', `provider "${provider.name}" tripped circuit breaker for ${this.cfg.cooldown}ms after ${failures} consecutive failures (${error instanceof Error ? error.message : String(error)})`)
     }
+    this.notify()
   }
 
   // ── 健康探测 ─────────────────────────────────────────────────────
@@ -278,6 +309,7 @@ export class LlmFallbackService {
   switchTo(name: string): boolean {
     if (this.providers.has(name)) {
       this.currentName = name
+      this.notify()
       return true
     }
     return false
