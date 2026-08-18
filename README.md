@@ -11,6 +11,7 @@
 - **零 Token 被动监测**:商汤可用性从真实请求结果推断(成功清冷却、触发码失败设冷却),火山方舟额度来自控制面 plan 快照(`tools/monitor-usage.ps1`,不耗推理 Token)
 - **分级冷却**:QUOTA(至额度重置)/ RATE_LIMIT(商汤短冷却 5min,其余 30min)/ SERVER(短冷却 10min);上游 `providerRetryAfterMs` 优先
 - **自动跳过冷却渠道**:用户手动选的 provider/model 正在冷却时,请求自动重定向到首个可用渠道
+- **输出截断避让(v0.7.0)**:某渠道 `turn/end` 达到输出 token 上限后进入截断冷却(默认 30min,可配 `truncateCooldownMs`),**下一次请求(包括用户点"继续")自动切到下一可用渠道**,避免反复截断;侧边栏显示「截断」标记
 - **`stripReasoningFor`**:商汤/幻城等不支持 reasoning effort 的渠道自动去掉该字段
 - **侧边栏「模型渠道」Tab**(需 `dsh-better-sidebar`):渠道状态(冷却/用量/当前渠道),10s 轮询
 - **命令**:`/llm-fallback-balance` 查询 DeepSeek 账户余额
@@ -59,6 +60,8 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | `stripReasoningFor` | `string[]` | 商汤/幻城 | 自动去掉 reasoning effort 的渠道 |
 | `statusPath` | `string` | `/api/llm-fallback/status` | 状态 API 路径 |
 | `chainFile` | `string` | `~/.dsh/plugins/llm-fallback/chain.json` | 拖拽排序持久化文件(优先级高于 config.chain) |
+| `truncateCooldownMs` | `number` | `30min` | 输出截断冷却:渠道被截断后此期间自动避让 |
+| `autoAvoidTruncation` | `boolean` | `true` | 启用截断自动避让(下次请求自动切下一可用渠道) |
 | `apiKey` | `string` | - | 余额查询 key(默认读 `DEEPSEEK_API_KEY`) |
 
 ## 侧边栏「模型渠道」Tab
