@@ -10,4 +10,4 @@ lib
 *.key
 *.crt
 profile.yaml
-secrets.*
+secrets.**.tgz
