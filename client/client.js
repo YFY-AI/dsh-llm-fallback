@@ -1,129 +1,161 @@
-// dsh-llm-fallback client bundle(DSH __ModuleLoader__ 格式)
-// 侧边栏「回替链」Tab:实时显示当前渠道 / 健康 / 延迟 / 熔断状态。
-// 数据通道:GET /api/llm-fallback/snapshot(初始快照)+ SSE /api/llm-fallback/events(事件推送)。
+/* dsh-llm-fallback client bundle — 侧边栏「模型渠道」Tab。
+ * 常驻显示各渠道状态(冷却/用量) + 当前渠道。数据来自 host 插件的
+ * GET /api/llm-fallback/status(零 Token 被动监测)。每 10s 轮询。
+ *
+ * 由本机生产中的 dsh-client-ui-ark-status 整合而来,API 路径改为
+ * /api/llm-fallback/status,Tab id 改为 llm-fallback(避免与旧包重复注册冲突)。
+ */
 window.__ModuleLoader__.load({
   id: "dsh-llm-fallback",
-  factory: function (require) {
+  factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-    var React = require("react");
-    var h = React.createElement;
 
-    var inject = ["slots"];
+    var react = require("react");
+    var hooks = react;
 
-    // ── 数据:初始快照 + SSE 事件推送 ─────────────────────────────
-    function useSnapshot() {
-      var state = React.useState(null);
-      var snap = state[0];
-      var setSnap = state[1];
-      React.useEffect(function () {
-        var closed = false;
-        fetch("/api/llm-fallback/snapshot")
-          .then(function (r) { return r.json(); })
-          .then(function (data) { if (!closed) setSnap(data); })
-          .catch(function () { /* 首次拉取失败等 SSE */ });
-        var es = null;
-        try {
-          es = new EventSource("/api/llm-fallback/events");
-          es.onmessage = function (ev) {
-            if (closed) return;
-            try { setSnap(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
-          };
-        } catch (e) { es = null; }
-        return function () {
-          closed = true;
-          if (es) { try { es.close(); } catch (e) { /* ignore */ } }
-        };
+    // ---- inline styles (theme-aware via CSS vars) ----
+    var css = (
+      ".llmf-root{display:flex;flex-direction:column;gap:6px;padding:12px 10px 10px;}" +
+      ".llmf-title{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);line-height:16px;}" +
+      ".llmf-current{display:flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);}" +
+      ".llmf-dot{width:7px;height:7px;border-radius:50%;flex:none;}" +
+      ".llmf-dot-ok{background:var(--dsw-alias-state-success-primary);}" +
+      ".llmf-dot-warn{background:var(--dsw-alias-state-warn-label);}" +
+      ".llmf-dot-down{background:var(--dsw-alias-state-error-primary);}" +
+      ".llmf-rows{display:flex;flex-direction:column;gap:3px;}" +
+      ".llmf-row{display:flex;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);min-width:0;}" +
+      ".llmf-row-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+      ".llmf-row-usage{flex:none;color:var(--dsw-alias-label-caption);font-variant-numeric:tabular-nums;}" +
+      ".llmf-row-cool{flex:none;color:var(--dsw-alias-state-warn-label);}" +
+      ".llmf-error{font-size:11px;color:var(--dsw-alias-state-error-primary);line-height:16px;}"
+    );
+    if (typeof document !== "undefined" && !document.querySelector("style[data-llmf]")) {
+      var style = document.createElement("style");
+      style.dataset.llmf = "1";
+      style.textContent = css;
+      document.head.appendChild(style);
+    }
+
+    function useStatus() {
+      var state = hooks.useState({ status: "loading", data: null });
+      hooks.useEffect(function () {
+        var alive = true;
+        function tick() {
+          fetch("/api/llm-fallback/status", { cache: "no-store" })
+            .then(function (r) { return r.json(); })
+            .then(function (data) { if (alive) state[1]({ status: "ready", data: data }); })
+            .catch(function () { if (alive) state[1]({ status: "error", data: null }); });
+        }
+        tick();
+        var timer = setInterval(tick, 10000);
+        return function () { alive = false; clearInterval(timer); };
       }, []);
-      return snap;
+      return state[0];
     }
 
-    function fmtTime(ts) {
-      try { return new Date(ts).toLocaleTimeString("zh-CN"); } catch (e) { return "-"; }
+    function dotClass(entry) {
+      if (entry && entry.cooling) return "llmf-dot-down";
+      if (entry && entry.lastFailAt && (!entry.lastOkAt || entry.lastFailAt > entry.lastOkAt)) return "llmf-dot-warn";
+      return "llmf-dot-ok";
     }
 
-    function FallbackView(props) {
-      var snap = useSnapshot();
-      var rows = null;
-      if (snap && snap.providers && snap.providers.length > 0) {
-        rows = snap.providers.map(function (p) {
-          var breaker = p.downUntil != null
-            ? "熔断至 " + fmtTime(p.downUntil)
-            : (p.consecutiveFailures > 0 ? p.consecutiveFailures + " 次" : "-");
-          return h("tr", { key: p.name },
-            h("td", { style: styles.td }, p.name),
-            h("td", { style: styles.td }, p.healthy ? "✅" : "❌"),
-            h("td", { style: styles.td }, p.latency != null ? p.latency + "ms" : "-"),
-            h("td", { style: styles.td }, breaker)
-          );
-        });
+    function ChannelStatusWidget(_props) {
+      var s = useStatus();
+      if (s.status === "loading") {
+        return react.createElement("div", { className: "llmf-root" }, react.createElement("div", { className: "llmf-title" }, "渠道状态…"));
       }
-      return h("div", { style: styles.box },
-        h("div", { style: styles.head },
-          "当前渠道:",
-          h("b", { style: styles.cur }, snap && snap.current ? snap.current : "无")
+      if (s.status === "error" || !s.data) {
+        return react.createElement("div", { className: "llmf-root" }, react.createElement("div", { className: "llmf-title" }, "模型渠道"), react.createElement("div", { className: "llmf-error" }, "无法获取"));
+      }
+      var chain = s.data.chain || [];
+      var current = chain.find(function (c) { return c.lastOkAt && (!c.cooling); }) || null;
+      var ark = s.data.usage && s.data.usage.ark ? s.data.usage.ark : null;
+      var rows = chain.map(function (entry) {
+        var usageText = "";
+        if (entry.provider.indexOf("volcengine-ark") === 0 && typeof entry.arkPercent === "number") {
+          usageText = Math.round(entry.arkPercent) + "%";
+        }
+        var cool = entry.cooling ? react.createElement("span", { className: "llmf-row-cool" }, "冷却") : null;
+        return react.createElement("div", { className: "llmf-row", key: entry.provider },
+          react.createElement("span", { className: "llmf-dot " + dotClass(entry) }),
+          react.createElement("span", { className: "llmf-row-name" }, entry.displayName),
+          usageText ? react.createElement("span", { className: "llmf-row-usage" }, usageText) : null,
+          cool
+        );
+      });
+      var currentLabel = current
+        ? (current.displayName + " · " + (current.model || ""))
+        : "—";
+      return react.createElement("div", { className: "llmf-root" },
+        react.createElement("div", { className: "llmf-title" }, "模型渠道"),
+        react.createElement("div", { className: "llmf-current" },
+          react.createElement("span", { className: "llmf-dot " + dotClass(current) }),
+          currentLabel
         ),
-        rows
-          ? h("table", { style: styles.table },
-              h("thead", null, h("tr", null,
-                h("th", { style: styles.th }, "Provider"),
-                h("th", { style: styles.th }, "健康"),
-                h("th", { style: styles.th }, "延迟"),
-                h("th", { style: styles.th }, "熔断")
-              )),
-              h("tbody", null, rows)
-            )
-          : h("div", { style: styles.empty }, "暂无已跟踪的 LLM provider")
+        react.createElement("div", { className: "llmf-rows" }, rows),
+        ark && ark["5h"] ? react.createElement("div", { className: "llmf-title" },
+          "方舟5h: " + Math.round(ark["5h"].percent) + "%"
+        ) : null
       );
     }
 
-    var styles = {
-      box: { padding: "12px", fontSize: 12, color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit" },
-      head: { marginBottom: 8, fontWeight: 500 },
-      cur: { marginLeft: 4 },
-      table: { width: "100%", borderCollapse: "collapse" },
-      th: { textAlign: "left", padding: "4px 6px", borderBottom: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.3))", fontSize: 11, color: "var(--dsw-alias-label-secondary, inherit)" },
-      td: { padding: "4px 6px", borderBottom: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.15))" },
-      empty: { padding: "12px 0", color: "var(--dsw-alias-label-tertiary, #888)" }
-    };
+    var inject = ["betterSidebar"];
 
     function apply(ctx) {
-      // better-sidebar 为可选宿主:用 ctx.get 安全访问(未安装则跳过,不影响其他功能)
-      var bs = (ctx.get && ctx.get("betterSidebar")) || null;
-      if (!bs || typeof bs.registerTab !== "function") return;
+      var disposers = [];
+      // 防御:betterSidebar 可能尚未就绪,轮询等待
+      var waitTimer = setInterval(function () {
+        var bs = ctx.get ? ctx.get("betterSidebar") : ctx.betterSidebar;
+        if (bs && typeof bs.registerTab === "function") {
+          clearInterval(waitTimer);
+          registerTab(bs);
+        }
+      }, 200);
+      disposers.push(function () { clearInterval(waitTimer); });
 
-      var disposer = bs.registerTab({
-        id: "llm-fallback",
-        title: function () { return "回替链"; },
-        icon: function (size) {
-          return h("span", { style: { fontSize: (size || 14) + "px", lineHeight: 1 } }, "🔀");
-        },
-        order: 60,
-        createTab: function () {
-          return { tab: { id: "llm-fallback:main", type: "llm-fallback", title: "回替链" } };
-        },
-        component: function (props) { return h(FallbackView, props); }
-      });
+      function registerTab(bs) {
+        var off = bs.registerTab({
+          id: "llm-fallback",
+          title: function () { return "模型渠道"; },
+          order: 60,
+          single: true,
+          component: function () {
+            return react.createElement(ChannelStatusWidget, null);
+          }
+        });
+        if (typeof off === "function") disposers.push(off);
+        // 自动打开该选项卡一次,让「模型渠道」出现在右侧工作台标签栏。
+        var attempt = 0;
+        var opened = false;
+        function openIt() {
+          if (opened) return;
+          try {
+            var snap = bs.getSnapshot && bs.getSnapshot();
+            if (!snap || !snap.sessionId) { return; }
+            bs.openTab({ type: "llm-fallback", title: "模型渠道" });
+            opened = true;
+          } catch (e) { /* 忽略 */ }
+        }
+        var timer = setInterval(function () {
+          attempt++;
+          openIt();
+          if (opened) {
+            clearInterval(timer);
+            return;
+          }
+          if (attempt < 20) return;
+        }, attempt < 20 ? 100 : 5000);
+        disposers.push(function () { clearInterval(timer); });
+      }
 
-      // 自动打开:持续轮询直到会话就绪(吸取"2 秒放弃导致 Tab 不自动开"的教训)
-      var attempt = 0;
-      var timer = setInterval(function () {
-        attempt++;
-        try {
-          var snap = bs.getSnapshot && bs.getSnapshot();
-          if (!snap || !snap.sessionId) return;
-          bs.openTab({ type: "llm-fallback" });
-          clearInterval(timer);
-        } catch (e) { /* ignore */ }
-      }, attempt < 20 ? 100 : 5000);
-
-      ctx.effect(function () {
-        return function () {
-          if (typeof disposer === "function") disposer();
-          clearInterval(timer);
-        };
-      }, "dsh-llm-fallback: better-sidebar tab");
+      return function () {
+        for (var i = 0; i < disposers.length; i++) {
+          try { disposers[i](); } catch (e) {}
+        }
+        disposers = [];
+      };
     }
 
     exports.apply = apply;

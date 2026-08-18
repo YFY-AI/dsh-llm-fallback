@@ -1,16 +1,20 @@
 # dsh-llm-fallback
 
-DeepSeek Harness LLM 回替链 + 余额查询插件
+**DSH 请求管线级多渠道自动回退**(usage 感知 / 分级冷却 / 渠道族优先)+ 侧边栏「模型渠道」Tab。
+
+在 DSH 的 `agent/request` 管线层面工作:任一渠道触发 `QUOTA` / `RATE_LIMIT` / `SERVER` 时,当前步骤自动重试到链上第一个可用渠道,并对用户显示一条切换通知。
 
 ## 功能
 
-- **LLM 提供商回退链(failover)**:按优先级依次调用,失败自动切换下一个
-- **真实超时**:AbortSignal 传导到 provider 调用,超时即中断
-- **健康探测 + 熔断**:周期探测维护健康状态,连续失败自动熔断冷却
-- **DSH 命令**:
-  - `/llm-fallback-balance` — 查询 DeepSeek 账户余额
-  - `/llm-fallback-status` — 查看回替链状态(当前 provider / 健康 / 熔断)
-- **侧边栏「回替链」Tab**(需已装 `dsh-better-sidebar`):实时显示当前渠道与各 provider 健康/延迟/熔断状态,SSE 事件推送即时刷新
+- **证据驱动回退**:失败码触发重试,按优先级选链上「既未冷却又未被 usage 标记不可用」的首个路由;链末位(DeepSeek 官方)永远兜底,真实失败不会被吞成死循环
+- **渠道族优先**:同 provider 换 model → 同渠道族换 provider(商汤①→②③、火山①→②)→ 跨族按链序
+- **零 Token 被动监测**:商汤可用性从真实请求结果推断(成功清冷却、触发码失败设冷却),火山方舟额度来自控制面 plan 快照(`tools/monitor-usage.ps1`,不耗推理 Token)
+- **分级冷却**:QUOTA(至额度重置)/ RATE_LIMIT(商汤短冷却 5min,其余 30min)/ SERVER(短冷却 10min);上游 `providerRetryAfterMs` 优先
+- **自动跳过冷却渠道**:用户手动选的 provider/model 正在冷却时,请求自动重定向到首个可用渠道
+- **`stripReasoningFor`**:商汤/幻城等不支持 reasoning effort 的渠道自动去掉该字段
+- **侧边栏「模型渠道」Tab**(需 `dsh-better-sidebar`):渠道状态(冷却/用量/当前渠道),10s 轮询
+- **命令**:`/llm-fallback-balance` 查询 DeepSeek 账户余额
+- **状态 API**:`GET /api/llm-fallback/status`(JSON,供侧边栏与外部消费)
 
 ## 安装
 
@@ -18,96 +22,84 @@ DeepSeek Harness LLM 回替链 + 余额查询插件
 npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 ```
 
-在 DSH 插件配置(cordis.patch.yml)中启用:
+在 DSH 插件配置(`~/.dsh/profiles/<profile>/cordis.patch.yml`)启用:
 
 ```yaml
-plugins:
-  - name: '@yfy-ai/dsh-llm-fallback'
-    config:
-      providers: ['ark', 'openai', 'ollama']   # 优先级白名单(可选)
-      timeout: 30000
-      retries: 2
-      healthCheck: true
-      healthCheckInterval: 60000
-      circuitBreaker:
-        failures: 3
-        cooldown: 30000
-      apiKey: ''   # 余额查询 API key(可选,默认读 DEEPSEEK_API_KEY 环境变量)
-```
-
-## 作为 Cordis 插件使用
-
-```ts
-import { createApp } from 'cordis'
-import { apply } from '@yfy-ai/dsh-llm-fallback'
-
-const app = createApp()
-app.plugin({ apply }, {
-  providers: ['ark', 'openai', 'ollama'],
-  timeout: 30000,
-  retries: 2,
-  healthCheck: true,
-})
-await app.start()
-
-// 注册任意带 chat() 的服务即可被自动跟踪(支持运行时动态注册)
-app.llm = {
-  name: 'ollama',
-  chat: async (messages, options) => { /* ... */ },
-  healthCheck: async () => true,
-}
-
-// 回替调用
-const result = await app.llmFallback.chat([{ role: 'user', content: 'hi' }])
+- insert:
+    - id: dsh-llm-fallback
+      name: '@yfy-ai/dsh-llm-fallback'
+      config:
+        chain:
+          - provider: volcengine-ark
+            model: deepseek-v4-flash-260801
+          - provider: hcnsec-1
+            model: DeepSeek-V4-Pro
+          - provider: sensenova-1
+            model: deepseek-v4-flash
+          - provider: deepseek-official
+            model: deepseek-v4-flash
+        codes: [QUOTA, RATE_LIMIT, SERVER]
 ```
 
 ## 配置选项
 
 | 选项 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `providers` | `string[]` | `[]` | 优先级白名单;空数组 = 自动发现所有带 chat() 的服务 |
-| `timeout` | `number` | `30000` | 单次调用超时(ms),AbortSignal 真实传导 |
-| `retries` | `number` | `2` | 单 provider 连续重试次数 |
-| `healthCheck` | `boolean` | `true` | 启用周期健康探测 |
-| `healthCheckInterval` | `number` | `60000` | 健康探测间隔(ms) |
-| `circuitBreaker.failures` | `number` | `3` | 连续失败熔断阈值 |
-| `circuitBreaker.cooldown` | `number` | `30000` | 熔断冷却时长(ms) |
+| `chain` | `[{provider, model}]` | 见源码 | 回退链(按优先级;末位为 ultimate 兜底) |
+| `codes` | `string[]` | `[QUOTA, RATE_LIMIT, SERVER]` | 触发回退的失败码 |
+| `codeLabels` | `dict` | 中文标签 | 通知文案 |
+| `usageFile` | `string` | `~/.dsh/plugins/ark-fallback/usage.json` | usage 快照路径(monitor-usage.ps1 产出) |
+| `usageRefreshMs` | `number` | `60000` | usage 刷新间隔 |
+| `rateLimitCooldownMs` | `number` | `30min` | RATE_LIMIT 冷却(非商汤) |
+| `quotaCooldownMs` | `number` | `60min` | QUOTA 冷却(无重置时间时) |
+| `serverCooldownMs` | `number` | `10min` | SERVER 冷却 |
+| `sensenovaRateLimitCooldownMs` | `number` | `5min` | 商汤 RATE_LIMIT 冷却(短时限流) |
+| `arkUsedPercentThreshold` | `number` | `85` | 方舟 5h 用量超此百分比视为不可用 |
+| `skipUltimateByUsage` | `boolean` | `false` | ultimate 路由是否也受可用性约束 |
+| `stripReasoningFor` | `string[]` | 商汤/幻城 | 自动去掉 reasoning effort 的渠道 |
+| `statusPath` | `string` | `/api/llm-fallback/status` | 状态 API 路径 |
 | `apiKey` | `string` | - | 余额查询 key(默认读 `DEEPSEEK_API_KEY`) |
 
-## 侧边栏「回替链」Tab
+## 用量监测(火山方舟,零 Token)
 
-安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「🔀 回替链」Tab 并自动打开:
+`tools/monitor-usage.ps1` 从控制面拉取套餐额度写入 usage.json(不探测任何模型):
 
-- **当前渠道**:回替链当前优先的 provider(最近成功者)
-- **状态表**:各 provider 健康 / 延迟 / 熔断状态
-- **数据通道**:host 提供 `GET /api/llm-fallback/snapshot`(初始快照)与 `GET /api/llm-fallback/events`(SSE 事件推送),provider 切换、失败、熔断、恢复时即时刷新,无需轮询
-
-## 开发
-
-```bash
-npm install
-npm run build      # tsc → lib/
-npm test           # cordis App 冒烟测试(构建后)
-npm run pack
+```powershell
+# 手动执行,或加入计划任务每 ~5 分钟一次
+powershell -File node_modules/@yfy-ai/dsh-llm-fallback/tools/monitor-usage.ps1
 ```
+
+## 从旧本地插件迁移
+
+本机旧版是 profile 本地文件(`./plugins/dsh-llm-fallback.mjs`)+ 独立 widget(`dsh-client-ui-ark-status`)。迁移到发布版:
+
+1. `cordis.patch.yml` 中把 `name: ./plugins/dsh-llm-fallback.mjs` 改为 `name: '@yfy-ai/dsh-llm-fallback'`(config 的 `chain` 等结构**无需修改**,schema 完全一致)
+2. **删除** `dsh-client-ui-ark-status` 的 insert 条目(侧边栏 Tab 已内置,重复注册会冲突)
+3. 重启 `dsh web`
+4. (可选)删除旧文件 `~/.dsh/profiles/<profile>/plugins/dsh-llm-fallback.mjs`
 
 ## 架构
 
 ```
 src/
-├── index.ts        # 插件入口:挂载 ctx.llmFallback + 注册 DSH 命令 + SSE/snapshot 端点
-├── host.ts         # LlmFallbackService:回替/超时/健康/熔断核心(含事件订阅)
-├── types.ts        # LlmMessage / LlmProvider / ProviderHealth
-└── commands/
-    ├── balance.ts  # /llm-fallback-balance
-    └── status.ts   # /llm-fallback-status
+├── index.js    # 入口:agent/request + agent/request-error 监听、usage/冷却状态、状态 API、balance 命令
+└── core.js     # 纯函数:渠道族 / 冷却计算 / 路由选择(可独立测试)
 client/
-└── client.js       # 侧边栏「回替链」Tab(DSH __ModuleLoader__ bundle,SSE 实时刷新)
-scripts/
-└── copy-client.mjs # 构建时把 client bundle 复制到 lib/
+└── client.js   # 侧边栏「模型渠道」Tab(DSH __ModuleLoader__ bundle,10s 轮询状态 API)
+tools/
+└── monitor-usage.ps1   # 火山方舟用量监测(零 Token)
+test/
+└── core.test.mjs       # core.js 纯函数单元测试
 ```
 
-Provider 以"鸭子类型"识别:任何带 `name` + `chat()` 的服务(经 `ctx[name] = value` 赋值)都会被 `internal/service` 事件自动跟踪。
+## 开发
+
+```bash
+npm install
+npm run build   # 复制 src/*.js → lib/,client → lib/
+npm test        # core.js 单元测试
+npm run pack
+```
 
 ## License
 
