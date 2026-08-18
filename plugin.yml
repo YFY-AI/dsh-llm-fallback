@@ -1,0 +1,11 @@
+name: dsh-llm-fallback
+version: 1.0.1
+description: DeepSeek Harness LLM 回替链 + 余额查询
+author: YFY-AI
+commands:
+  - name: llm-fallback
+    description: LLM 模型回替链管理
+    subcommands:
+      - name: balance
+        description: 查询当前 DeepSeek 账户余额
+        handler: balanceCommand

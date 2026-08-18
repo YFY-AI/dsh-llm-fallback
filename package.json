@@ -1,41 +1,18 @@
 {
   "name": "@YFY-AI/dsh-llm-fallback",
-  "version": "0.1.0",
-  "description": "DSH plugin: LLM provider fallback / failover for Cordis",
-  "type": "module",
-  "main": "./dist/index.js",
-  "exports": {
-    ".": "./dist/index.js"
+  "version": "1.0.1",
+  "description": "DeepSeek Harness LLM 回替链 + 余额查询",
+  "author": "YFY-AI",
+  "dependencies": {
+    "@deepseek-ai/dsh-client": "^1.0.0"
   },
-  "files": ["dist"],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "prepublishOnly": "npm run build"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/YFY-AI/dsh-llm-fallback.git"
-  },
-  "keywords": [
-    "cordis",
-    "dsh",
-    "llm",
-    "fallback",
-    "failover"
+  "files": [
+    "src",
+    "plugin.yml",
+    "package.json"
   ],
-  "author": "",
-  "license": "MIT",
-  "peerDependencies": {
-    "cordis": "^1.0.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.0.0",
-    "cordis": "^1.0.0"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://npm.pkg.github.com/",
-    "provenance": true
+  "main": "index.js",
+  "scripts": {
+    "pack": "npm pack"
   }
 }
