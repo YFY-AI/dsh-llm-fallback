@@ -5,7 +5,7 @@
  * 数据:GET /api/llm-fallback/status(10s 轮询)。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-llm-fallback",
+  id: "@yfy-ai/dsh-llm-fallback",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
