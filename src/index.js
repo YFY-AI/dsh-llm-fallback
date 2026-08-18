@@ -64,7 +64,8 @@ export const Config = z.object({
   stripReasoningFor: z.array(z.string()).default([
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
   ]),
-  apiKey: z.string().optional(),
+  // 注:schemastery 的 object 字段天然可选(zod 才需要 .optional())
+  apiKey: z.string(),
 })
 
 export function apply(ctx, config) {
