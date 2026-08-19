@@ -72,7 +72,7 @@ export const Config = z.object({
   truncateCooldownMs: z.number().default(30 * 60 * 1000),
   /** 是否启用"截断自动避让"(下次请求自动切到下一可用渠道) */
   autoAvoidTruncation: z.boolean().default(true),
-  sensenovaRateLimitCooldownMs: z.number().default(5 * 60 * 1000),
+  sensenovaRateLimitCooldownMs: z.number().default(30 * 60 * 1000),
   stripReasoningFor: z.array(z.string()).default([
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
   ]),
@@ -480,7 +480,15 @@ export function apply(ctx, config) {
       const failedModel = last && last.provider === provider ? last.model : void 0
       const fallbackModel = failedModel ?? chain.find((route) => route.provider === provider)?.model
       if (fallbackModel === void 0) return next()
-      const cool = cooldownForCode(failure.code, provider, fallbackModel, failure)
+      let cool = cooldownForCode(failure.code, provider, fallbackModel, failure)
+      // 连续 RATE_LIMIT 升级: 同一渠道已在"限流冷却"中,再次 RATE_LIMIT 说明是额度耗尽,升级为 QUOTA 冷却
+      if (cool.reason !== '上游指定重试时间' && failure.code === 'RATE_LIMIT') {
+        const key = cooldownKey(provider, fallbackModel)
+        const existing = cooldowns.get(key)
+        if (existing && existing.until > Date.now() && existing.reason === '限流冷却') {
+          cool = { until: Date.now() + quotaCooldownMs, reason: '连续限流升级(额度耗尽)' }
+        }
+      }
       cooldowns.set(cooldownKey(provider, fallbackModel), cool)
       recordFailure(provider, fallbackModel, failure.code)
       // 质量指标:失败 + 延迟(近似 = 请求派发到失败)

@@ -52,10 +52,10 @@ export function cooldownFor(code, provider, model, failure, cfg, usage) {
     return { until: Date.now() + cfg.serverCooldownMs, reason: '服务端错误' }
   }
   // RATE_LIMIT 通常是短时限流(并发/频率),不是额度耗尽。
-  // 商汤 Token Plan 的 RATE_LIMIT 也多为瞬时限制——用短冷却,
-  // 避免把仍有额度的渠道长时间误冷却。真正的额度耗尽会表现为 QUOTA。
+  // 商汤 Token Plan 的 RATE_LIMIT 也多为额度耗尽(每5小时500次)——用标准冷却,
+  // 并配合 index.js 的"连续 RATE_LIMIT 升级 QUOTA"逻辑进一步规避无效重试。
   if (provider.startsWith('sensenova-')) {
-    return { until: Date.now() + cfg.sensenovaRateLimitCooldownMs, reason: '短时限流' }
+    return { until: Date.now() + cfg.sensenovaRateLimitCooldownMs, reason: '限流冷却' }
   }
   return { until: Date.now() + cfg.rateLimitCooldownMs, reason: '限流冷却' }
 }

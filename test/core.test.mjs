@@ -53,9 +53,9 @@ assert.ok(q2.until - now >= cfg.quotaCooldownMs && q2.until - now < cfg.quotaCoo
 const s = cooldownFor('SERVER', 'a', 'm', null, cfg, null)
 assert.equal(s.reason, '服务端错误')
 assert.ok(s.until - now >= cfg.serverCooldownMs && s.until - now < cfg.serverCooldownMs + 100)
-// 商汤 RATE_LIMIT → 更短冷却
+// 商汤 RATE_LIMIT → 标准冷却(30min,商汤额度为每5小时500次)
 const sr = cooldownFor('RATE_LIMIT', 'sensenova-1', 'm', null, cfg, null)
-assert.equal(sr.reason, '短时限流')
+assert.equal(sr.reason, '限流冷却')
 assert.ok(sr.until - now >= cfg.sensenovaRateLimitCooldownMs && sr.until - now < cfg.sensenovaRateLimitCooldownMs + 100)
 // 其它 RATE_LIMIT → 常规冷却
 const r = cooldownFor('RATE_LIMIT', 'hcnsec-1', 'm', null, cfg, null)
