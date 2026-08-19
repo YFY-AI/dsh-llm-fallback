@@ -1,4 +1,4 @@
-# monitor-usage.ps1 — 火山方舟用量监测脚本(零 Token)
+﻿# monitor-usage.ps1 — 火山方舟用量监测脚本(零 Token)
 # 只从控制面拉套餐额度(arkcli usage plan),不探测任何模型。
 # 商汤用量由 dsh-llm-fallback 插件被动记录(请求成功/失败),本脚本不主动探测。
 #
@@ -11,8 +11,9 @@
 # 用法:PowerShell 定时任务 / 手动执行:
 #   powershell -File monitor-usage.ps1
 #   powershell -File monitor-usage.ps1 -UsageFile "D:\dsh\usage.json"   # 自定义输出路径
+# 默认与插件 usageFile 一致(~/.dsh/plugins/llm-fallback/usage.json)
 param(
-    [string]$UsageFile = "C:\Users\Administrator\.dsh\plugins\ark-fallback\usage.json"
+    [string]$UsageFile = (Join-Path $HOME '.dsh\plugins\llm-fallback\usage.json')
 )
 
 $ErrorActionPreference = "Continue"

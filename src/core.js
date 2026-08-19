@@ -112,27 +112,28 @@ export function validateChain(value) {
   return out.length > 0 ? out : null
 }
 
+/**
+ * 选择回退目标:严格沿 chain 从头找第一个「可用 且 不是刚失败那一条」的渠道。
+ * 不做同 provider/同渠道族优先——chain 顺序即为完整回退顺序(拖拽即全局排序)。
+ * 冷却/usage 耗尽的渠道跳过;链末位(ultimate)默认永远可用,避免真实失败被吞成死循环。
+ * @param {string} skipProvider - 刚失败的 provider
+ * @param {string} skipModel - 刚失败的 model
+ * @param {Array} chain - [{ provider, model }, ...](此处即"当前生效顺序")
+ * @param {Map} cooldowns
+ * @param {object|null} usage
+ * @param {object} cfg - { arkThreshold, skipUltimateByUsage }
+ * @returns {{provider:string, model:string}|null}
+ */
 export function pickFallbackTarget(skipProvider, skipModel, chain, cooldowns, usage, cfg) {
   const usable = (route, i) =>
     i === chain.length - 1 && !cfg.skipUltimateByUsage
       ? true
       : !routeUnavailable(route.provider, route.model, cooldowns, usage, cfg)
-  const family = providerFamily(skipProvider)
-  // 优先级 1:同 provider 的其它 model(商汤① flash → 商汤① glm)
+  // 严格链序扫描:每次失败后都从 chain[0] 重新找第一个可用,而非从失败渠道附近起步
   for (let i = 0; i < chain.length; i++) {
     const route = chain[i]
-    if (route.provider === skipProvider && route.model !== skipModel && usable(route, i)) return route
-  }
-  // 优先级 2:同渠道族其它 provider(商汤① → 商汤②③;火山① → 火山②)
-  for (let i = 0; i < chain.length; i++) {
-    const route = chain[i]
-    if (route.provider !== skipProvider && providerFamily(route.provider) === family && usable(route, i)) return route
-  }
-  // 优先级 3:跨族,按链顺序(商汤全挂 → 幻城 → 官方)
-  for (let i = 0; i < chain.length; i++) {
-    const route = chain[i]
+    // 避免原地重试刚失败的同一路由
     if (route.provider === skipProvider && route.model === skipModel) continue
-    if (providerFamily(route.provider) === family) continue
     if (usable(route, i)) return route
   }
   return chain[chain.length - 1] ?? null
@@ -164,4 +165,52 @@ export function avoidTruncated(provider, model, chain, cooldowns, truncated, cfg
   if (!alt) return null
   if (alt.provider === provider && alt.model === model) return null
   return alt
+}
+
+/**
+ * 滑动窗口指标:追加一次请求结果,返回新窗口数组(固定最大长度,超长丢最旧)。
+ * 每条记录 { ok: boolean, latencyMs: number|null }。窗口本身纯数据,
+ * 统计交给 windowSummary,host 仅负责追加与持久化。
+ * @param {Array|null} window - 旧窗口(可 null)
+ * @param {boolean} ok - 是否成功(截断按"成功但输出不完整"计 ok,单独统计截断数)
+ * @param {number|null} latencyMs - 本次延迟;未知传 null
+ * @param {number} maxSize - 窗口上限,默认 20
+ * @returns {Array} 新窗口
+ */
+export function pushWindowMetric(window, ok, latencyMs, maxSize = 20) {
+  const entry = {
+    ok: Boolean(ok),
+    latencyMs: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : null,
+  }
+  const next = (window ?? []).concat(entry)
+  return next.length > maxSize ? next.slice(next.length - maxSize) : next
+}
+
+/**
+ * 窗口统计摘要(纯函数,便于测试与 status API 直接消费)。
+ * @param {Array|null} window - pushWindowMetric 产出的窗口
+ * @returns {{ rate:number|null, okCount:number, failCount:number, avgLatencyMs:number|null, count:number }}
+ *   rate 为成功占比 0-1(空窗口 null);avgLatencyMs 为已知延迟的均值(ms,取整)。
+ */
+export function windowSummary(window) {
+  if (!window || window.length === 0) {
+    return { rate: null, okCount: 0, failCount: 0, avgLatencyMs: null, count: 0 }
+  }
+  let ok = 0
+  let latSum = 0
+  let latCount = 0
+  for (const e of window) {
+    if (e.ok) ok++
+    if (Number.isFinite(e.latencyMs) && e.latencyMs >= 0) {
+      latSum += e.latencyMs
+      latCount++
+    }
+  }
+  return {
+    rate: ok / window.length,
+    okCount: ok,
+    failCount: window.length - ok,
+    avgLatencyMs: latCount > 0 ? Math.round(latSum / latCount) : null,
+    count: window.length,
+  }
 }

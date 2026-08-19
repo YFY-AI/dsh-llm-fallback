@@ -20,12 +20,14 @@ import {
   displayNameOf,
   pickFallbackTarget,
   providerFamily,
+  pushWindowMetric,
   routeUnavailable,
   validateChain,
+  windowSummary,
 } from './core.js'
 
 export const name = 'dsh-llm-fallback'
-export const inject = ['timer', 'webServer']
+export const inject = ['timer', 'webServer', 'llm']
 
 /** 一条回退链路由。 */
 const routeSchema = z.object({
@@ -55,7 +57,7 @@ export const Config = z.object({
     SERVER: '服务端错误',
     MAX_TOKENS: '输出达到 token 上限',
   }),
-  usageFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'ark-fallback', 'usage.json')),
+  usageFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'usage.json')),
   usageRefreshMs: z.number().default(60000),
   rateLimitCooldownMs: z.number().default(30 * 60 * 1000),
   quotaCooldownMs: z.number().default(60 * 60 * 1000),
@@ -64,6 +66,8 @@ export const Config = z.object({
   skipUltimateByUsage: z.boolean().default(false),
   statusPath: z.string().default('/api/llm-fallback/status'),
   chainFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'chain.json')),
+  /** 渠道质量指标(成功率/延迟/截断数)持久化文件,重启不丢 */
+  metricsFile: z.string().default(join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'metrics.json')),
   /** 输出截断冷却:渠道被 turn/end max-tokens 标记后,此期间请求自动避让 */
   truncateCooldownMs: z.number().default(30 * 60 * 1000),
   /** 是否启用"截断自动避让"(下次请求自动切到下一可用渠道) */
@@ -111,6 +115,22 @@ export function apply(ctx, config) {
     const saved = loadChainFile(resolved.chainFile)
     if (saved) chain = saved
   }
+  // ---- 输入框模型列表精简:只显示 chain 里配置的模型 ----
+  // 包装 ctx.llm.listModels,过滤掉不在 chain 中的模型(不碰内置包,卸载即恢复)。
+  // 注意:chain 是 let 变量,拖拽/自动排序热更新后按最新 chain 过滤。
+  const llm = ctx.llm
+  if (llm && typeof llm.listModels === 'function') {
+    const originalListModels = llm.listModels.bind(llm)
+    llm.listModels = async (provider) => {
+      const all = await originalListModels(provider)
+      // chain 里该 provider 配置的模型 id 集合
+      const wanted = new Set(
+        chain.filter((route) => route.provider === provider).map((route) => route.model)
+      )
+      if (wanted.size === 0) return []
+      return all.filter((model) => wanted.has(model.id))
+    }
+  }
   const codes = new Set(resolved.codes)
   const labels = resolved.codeLabels
   const usageFile = resolved.usageFile
@@ -122,6 +142,7 @@ export function apply(ctx, config) {
   const statusPath = resolved.statusPath
   const stripReasoningFor = new Set(resolved.stripReasoningFor)
   const serverCooldownMs = resolved.serverCooldownMs
+  const metricsFile = resolved.metricsFile
 
   const coreCfg = {
     quotaCooldownMs,
@@ -131,6 +152,82 @@ export function apply(ctx, config) {
     arkThreshold,
     skipUltimateByUsage,
   }
+
+  // ---- 渠道质量指标(滑动窗口)+ 切换历史 + 手动路由 ----
+  // 置于 usage 块之前:refreshUsage 的"额度恢复"事件依赖 pushEvent。
+  const metrics = new Map()                 // cooldownKey -> { window: [], truncatedCount }
+  const routeEvents = []                    // { t, kind, ... },最多 30 条
+  const requestStartBySession = new WeakMap() // session -> { at }(延迟近似基准)
+  const forcedRouteBySession = new Map()    // sessionId -> { provider, model }(一次性)
+
+  /** 取(或创建)某渠道的指标条目。 */
+  function metricEntry(provider, model) {
+    const key = cooldownKey(provider, model)
+    let m = metrics.get(key)
+    if (!m) {
+      m = { window: [], truncatedCount: 0 }
+      metrics.set(key, m)
+    }
+    return m
+  }
+
+  /** 记录一次请求结果(成功/失败 + 延迟),窗口持久化由 saveMetrics 防抖。 */
+  function recordResult(provider, model, ok, latencyMs) {
+    const m = metricEntry(provider, model)
+    m.window = pushWindowMetric(m.window, ok, latencyMs)
+    saveMetrics()
+  }
+
+  /** 追加一条切换历史(内存,最多 30 条)。 */
+  function pushEvent(ev) {
+    routeEvents.push({ t: Date.now(), ...ev })
+    if (routeEvents.length > 30) routeEvents.splice(0, routeEvents.length - 30)
+  }
+
+  /** 立即把 metrics 写盘(原子:tmp + rename)。 */
+  function flushMetricsNow() {
+    try {
+      const obj = {}
+      for (const [k, v] of metrics) obj[k] = { window: v.window, truncatedCount: v.truncatedCount }
+      mkdirSync(dirname(metricsFile), { recursive: true })
+      const tmp = `${metricsFile}.tmp`
+      writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8')
+      try { renameSync(tmp, metricsFile) } catch { writeFileSync(metricsFile, JSON.stringify(obj, null, 2), 'utf8') }
+    } catch (error) {
+      console.warn(`[dsh-llm-fallback] metrics persist failed: ${String(error)}`)
+    }
+  }
+
+  /** 防抖写盘(高频记录时合并,2s 内最后一次生效)。 */
+  let metricsSaveTimer = null
+  function saveMetrics() {
+    if (metricsSaveTimer) clearTimeout(metricsSaveTimer)
+    metricsSaveTimer = setTimeout(() => {
+      metricsSaveTimer = null
+      flushMetricsNow()
+    }, 2000)
+  }
+
+  /** 启动时恢复历史指标(损坏/缺失忽略)。 */
+  function loadMetrics() {
+    try {
+      if (!existsSync(metricsFile)) return
+      const raw = readFileSync(metricsFile, 'utf8')
+      const clean = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+      const data = JSON.parse(clean)
+      if (data && typeof data === 'object') {
+        for (const [k, v] of Object.entries(data)) {
+          if (v && Array.isArray(v.window)) {
+            metrics.set(k, {
+              window: v.window,
+              truncatedCount: Number.isFinite(v.truncatedCount) ? v.truncatedCount : 0,
+            })
+          }
+        }
+      }
+    } catch { /* 损坏忽略,从空开始 */ }
+  }
+  loadMetrics()
 
   // ---- usage 快照(火山方舟 plan 窗口,零 token) ----
   let usage = null
@@ -152,6 +249,7 @@ export function apply(ctx, config) {
             for (const p of ['volcengine-ark', 'volcengine-ark-2']) {
               cooldowns.delete(p)
             }
+            pushEvent({ kind: 'recover', provider: 'volcengine-ark', note: `方舟 ${label} 用量回落至 ${w.percent}%` })
           }
           prevArkPct[label] = w.percent
         }
@@ -173,19 +271,34 @@ export function apply(ctx, config) {
   const lastRouteByAgent = new WeakMap()
   // 每 session 最近派发路由(turn/end max-tokens 用,session/event 只有 session 无 agent)
   const lastRouteBySession = new WeakMap()
+  // 每 sessionId 当前路由(实时展示用,status?sessionId= 返回;key 为 sessionId 字符串)
+  const currentRouteBySessionId = new Map()
   // 截断冷却:cooldownKey(provider|model) -> until(turn/end max-tokens 时记录)
   const truncated = new Map()
 
-  // 监听轮次结束:输出截断(max-tokens)时记录渠道,后续请求自动避让
+  // 监听轮次结束:① 质量指标(成功/截断 + 延迟)② 截断时记录渠道,后续请求自动避让
   const disposeTurnEnd = ctx.on('session/event', (subject, event) => {
-    if (!resolved.autoAvoidTruncation) return
     if (event?.type !== 'turn/end') return
     const reason = event.data?.reason
-    if (reason?.kind !== 'max-tokens') return
     const route = lastRouteBySession.get(subject)
+    // ① 质量指标:轮次正常结束 = 请求成功(截断也算完成,单独计截断数)
+    if (route?.provider) {
+      const startAt = requestStartBySession.get(subject)?.at
+      const latency = startAt ? Date.now() - startAt : null
+      recordResult(route.provider, route.model, true, latency)
+      if (reason?.kind === 'max-tokens') {
+        metricEntry(route.provider, route.model).truncatedCount++
+        saveMetrics()
+        pushEvent({ kind: 'truncated', provider: route.provider, model: route.model })
+      }
+    }
+    // ② 截断避让(仅当开启):标记渠道,下次请求自动切换
+    if (!resolved.autoAvoidTruncation) return
+    if (reason?.kind !== 'max-tokens') return
     if (!route?.provider) return
     const until = Date.now() + resolved.truncateCooldownMs
     truncated.set(cooldownKey(route.provider, route.model), until)
+    pushEvent({ kind: 'avoid', provider: route.provider, model: route.model, note: `截断避让 ${Math.round(resolved.truncateCooldownMs / 60000)}min` })
     ctx.logger?.info?.(
       `[dsh-llm-fallback] ${displayNameOf(route.provider)} ${route.model} hit output token cap; will avoid for ${Math.round(resolved.truncateCooldownMs / 60000)}min`,
     )
@@ -232,6 +345,10 @@ export function apply(ctx, config) {
   // recordSuccess 只更新展示状态,绝不能清冷却:冷却由 request-error 设置,
   // 仅靠到期或 usage 恢复释放——在请求构建期清冷却会导致 ①↔② 循环。
   const outcomes = new Map() // provider -> { lastOkAt, lastFailAt, lastCode }
+  /** 取 session 对象的稳定 id(字符串),供 status?sessionId= 反查当前路由。 */
+  function sessionIdOf(session) {
+    return session?.sid ?? session?.id ?? null
+  }
   function recordSuccess(provider, model, agent) {
     outcomes.set(provider, { ...(outcomes.get(provider) ?? {}), lastOkAt: Date.now(), lastCode: void 0 })
     if (agent) {
@@ -247,6 +364,8 @@ export function apply(ctx, config) {
     const cool = cooldowns.get(cooldownKey(route.provider, route.model))
     const out = outcomes.get(route.provider)
     const trunc = truncated.get(cooldownKey(route.provider, route.model))
+    const m = metrics.get(cooldownKey(route.provider, route.model))
+    const s = windowSummary(m?.window)
     return {
       provider: route.provider,
       model: route.model,
@@ -261,16 +380,25 @@ export function apply(ctx, config) {
       lastCode: out?.lastCode ?? null,
       arkPercent: usage?.ark?.['5h']?.percent ?? null,
       arkResetAt: usage?.ark?.['5h']?.reset_at ?? null,
+      // 质量指标(最近 20 次滑动窗口)
+      successRate: s.rate,
+      okCount: s.okCount,
+      failCount: s.failCount,
+      avgLatencyMs: s.avgLatencyMs,
+      truncatedCount: m?.truncatedCount ?? 0,
     }
   }
-  function buildStatus() {
+  function buildStatus(sessionId) {
+    const current = sessionId ? (currentRouteBySessionId.get(sessionId) ?? null) : null
     return {
       updated_at: Date.now(),
       chain: chain.map(providerState),
+      current,
       usage: {
         ark: usage?.ark ?? null,
         updated_at: usage?.updated_at ?? null,
       },
+      events: routeEvents.slice(-20),
     }
   }
 
@@ -282,7 +410,9 @@ export function apply(ctx, config) {
       path: statusPath,
       handler: (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-        res.end(JSON.stringify(buildStatus()))
+        const u = new URL(req.url, 'http://dsh.local')
+        const sessionId = u.searchParams.get('sessionId')
+        res.end(JSON.stringify(buildStatus(sessionId)))
       },
     })
     // POST /api/llm-fallback/chain — 拖拽排序热更新(内存立即生效 + 持久化 chainFile)
@@ -307,6 +437,34 @@ export function apply(ctx, config) {
         })
       },
     })
+    // POST /api/llm-fallback/route — 手动"用此渠道":下一次请求强制路由到指定渠道
+    // (per-session 一次性;仅校验路由在 chain 内,不做冷却拦截——用户明确选择优先)
+    disposeStatusRoute = webServer.register({
+      kind: 'exact',
+      path: '/api/llm-fallback/route',
+      handler: (req, res) => {
+        let body = ''
+        req.on('data', (chunk) => { body += chunk })
+        req.on('end', () => {
+          const send = (status, obj) => {
+            res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify(obj))
+          }
+          let parsed
+          try { parsed = JSON.parse(body || '{}') } catch { return send(400, { ok: false, error: 'invalid json' }) }
+          const { provider, model, sessionId } = parsed ?? {}
+          if (typeof provider !== 'string' || typeof model !== 'string' || typeof sessionId !== 'string') {
+            return send(400, { ok: false, error: 'provider/model/sessionId required' })
+          }
+          if (!chain.some((r) => r.provider === provider && r.model === model)) {
+            return send(400, { ok: false, error: 'route not in chain' })
+          }
+          forcedRouteBySession.set(sessionId, { provider, model })
+          pushEvent({ kind: 'manual', provider, model })
+          send(200, { ok: true, provider, model })
+        })
+      },
+    })
   } catch (error) {
     ctx.logger?.warn?.(`dsh-llm-fallback: status route failed: ${String(error)}`)
   }
@@ -325,11 +483,15 @@ export function apply(ctx, config) {
       const cool = cooldownForCode(failure.code, provider, fallbackModel, failure)
       cooldowns.set(cooldownKey(provider, fallbackModel), cool)
       recordFailure(provider, fallbackModel, failure.code)
+      // 质量指标:失败 + 延迟(近似 = 请求派发到失败)
+      const startAt = requestStartBySession.get(agent.session)?.at
+      recordResult(provider, fallbackModel, false, startAt ? Date.now() - startAt : null)
       const target = pickTarget(provider, fallbackModel)
       if (target === void 0) return next()
       // 避免重试刚失败的同一路由
       if (target.provider === provider && target.model === fallbackModel) return next()
       pendingFallbackTarget.set(agent, target)
+      pushEvent({ kind: 'fallback', from: provider, model: fallbackModel, to: target.provider, targetModel: target.model, reason: cool.reason })
       appendNotice(agent, failure.code, provider, target, cool.reason)
       return { kind: 'retry' }
     },
@@ -348,29 +510,37 @@ export function apply(ctx, config) {
       } else {
         nextConfig = { ...resolved }
       }
-      // 自动跳过冷却中的渠道:用户选的 provider/model 正在冷却则重定向到链上第一个可用渠道
-      if (nextConfig.provider && nextConfig.model && unavailable(nextConfig.provider, nextConfig.model)) {
-        const fallback = pickTarget(nextConfig.provider, nextConfig.model)
-        if (fallback && (fallback.provider !== nextConfig.provider || fallback.model !== nextConfig.model)) {
-          nextConfig = { ...nextConfig, provider: fallback.provider, model: fallback.model }
+      // 手动"用此渠道":一次性强制路由(侧边栏按钮),最高优先,跳过自动冷却/截断避让
+      const forced = forcedRouteBySession.get(payload.agent.session)
+      if (forced && forced.provider && forced.model) {
+        forcedRouteBySession.delete(payload.agent.session)
+        nextConfig = { ...nextConfig, provider: forced.provider, model: forced.model }
+      } else {
+        // 自动跳过冷却中的渠道:用户选的 provider/model 正在冷却则重定向到链上第一个可用渠道
+        if (nextConfig.provider && nextConfig.model && unavailable(nextConfig.provider, nextConfig.model)) {
+          const fallback = pickTarget(nextConfig.provider, nextConfig.model)
+          if (fallback && (fallback.provider !== nextConfig.provider || fallback.model !== nextConfig.model)) {
+            nextConfig = { ...nextConfig, provider: fallback.provider, model: fallback.model }
+          }
         }
-      }
-      // 截断避让:当前渠道在截断冷却内(上轮 max-tokens 截断)自动切下一可用渠道
-      if (resolved.autoAvoidTruncation && nextConfig.provider && nextConfig.model) {
-        const alt = avoidTruncated(nextConfig.provider, nextConfig.model, chain, cooldowns, truncated, coreCfg)
-        if (alt && (alt.provider !== nextConfig.provider || alt.model !== nextConfig.model)) {
-          const from = `${displayNameOf(nextConfig.provider)} ${nextConfig.model}`
-          nextConfig = { ...nextConfig, provider: alt.provider, model: alt.model }
-          try {
-            appendNotice(payload.agent, 'MAX_TOKENS', nextConfig.provider, alt, `上轮输出截断(${from})`)
-          } catch { /* notice 失败不阻断 */ }
+        // 截断避让:当前渠道在截断冷却内(上轮 max-tokens 截断)自动切下一可用渠道
+        if (resolved.autoAvoidTruncation && nextConfig.provider && nextConfig.model) {
+          const alt = avoidTruncated(nextConfig.provider, nextConfig.model, chain, cooldowns, truncated, coreCfg)
+          if (alt && (alt.provider !== nextConfig.provider || alt.model !== nextConfig.model)) {
+            const from = `${displayNameOf(nextConfig.provider)} ${nextConfig.model}`
+            nextConfig = { ...nextConfig, provider: alt.provider, model: alt.model }
+            try {
+              appendNotice(payload.agent, 'MAX_TOKENS', nextConfig.provider, alt, `上轮输出截断(${from})`)
+            } catch { /* notice 失败不阻断 */ }
+          }
         }
       }
       // 不支持 reasoning effort 的渠道去掉该字段(商汤/幻城)
       if (nextConfig.reasoningEffort && stripReasoningFor.has(nextConfig.provider)) {
         delete nextConfig.reasoningEffort
       }
-      // 不在此清冷却(请求尚未发出);只更新当前渠道并记录派发路由
+      // 不在此清冷却(请求尚未发出);记录派发时间(延迟近似基准)+ 当前渠道
+      requestStartBySession.set(payload.agent.session, { at: Date.now() })
       recordSuccess(nextConfig.provider, nextConfig.model ?? '', payload.agent)
       lastRouteByAgent.set(payload.agent, {
         provider: nextConfig.provider,
@@ -380,6 +550,14 @@ export function apply(ctx, config) {
         provider: nextConfig.provider,
         model: nextConfig.model ?? '',
       })
+      // 实时"当前"路由:按 sessionId 记录,status?sessionId= 读取
+      const sid = sessionIdOf(payload.agent.session)
+      if (sid) {
+        currentRouteBySessionId.set(sid, {
+          provider: nextConfig.provider,
+          model: nextConfig.model ?? '',
+        })
+      }
       return nextConfig
     },
     { prepend: true },
@@ -428,6 +606,11 @@ export function apply(ctx, config) {
   }
 
   return () => {
+    if (metricsSaveTimer) {
+      clearTimeout(metricsSaveTimer)
+      metricsSaveTimer = null
+    }
+    flushMetricsNow() // 卸载时立即落盘(清空防抖)
     disposeError()
     disposeRequest()
     disposeTurnEnd()

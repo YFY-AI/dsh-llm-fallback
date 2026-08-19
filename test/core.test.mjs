@@ -8,8 +8,10 @@ import {
   displayNameOf,
   pickFallbackTarget,
   providerFamily,
+  pushWindowMetric,
   routeUnavailable,
   validateChain,
+  windowSummary,
 } from '../lib/core.js'
 
 // ── providerFamily ──
@@ -192,5 +194,31 @@ assert.equal(
   null,
 )
 console.log('✔ avoidTruncated')
+
+// ── pushWindowMetric / windowSummary(滑动窗口指标) ──
+// 空窗口统计
+assert.deepEqual(windowSummary(null), { rate: null, okCount: 0, failCount: 0, avgLatencyMs: null, count: 0 })
+assert.deepEqual(windowSummary([]), { rate: null, okCount: 0, failCount: 0, avgLatencyMs: null, count: 0 })
+// 追加:ok + 延迟
+let w = pushWindowMetric(null, true, 1200)
+assert.deepEqual(w, [{ ok: true, latencyMs: 1200 }])
+assert.deepEqual(windowSummary(w), { rate: 1, okCount: 1, failCount: 0, avgLatencyMs: 1200, count: 1 })
+// 追加失败(延迟未知传 null)
+w = pushWindowMetric(w, false, null)
+assert.deepEqual(windowSummary(w), { rate: 0.5, okCount: 1, failCount: 1, avgLatencyMs: 1200, count: 2 })
+// 平均延迟只统计已知值
+w = pushWindowMetric(w, true, 800)
+assert.deepEqual(windowSummary(w), { rate: 2 / 3, okCount: 2, failCount: 1, avgLatencyMs: 1000, count: 3 })
+// 非法延迟(负数/NaN)按未知处理
+w = pushWindowMetric(w, true, -5)
+assert.deepEqual(windowSummary(w).avgLatencyMs, 1000)
+w = pushWindowMetric(w, true, Number.NaN)
+assert.deepEqual(windowSummary(w).avgLatencyMs, 1000)
+// 窗口上限:超过 maxSize 丢最旧(保留 i=5..24,延迟 105..124,均值 114.5→115)
+w = null
+for (let i = 0; i < 25; i++) w = pushWindowMetric(w, i % 2 === 0, 100 + i, 20)
+assert.equal(w.length, 20)
+assert.deepEqual(windowSummary(w), { rate: 0.5, okCount: 10, failCount: 10, avgLatencyMs: 115, count: 20 })
+console.log('✔ pushWindowMetric / windowSummary')
 
 console.log('\nCORE TESTS OK')

@@ -55,7 +55,7 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | `chain` | `[{provider, model}]` | 见源码 | 回退链(按优先级;末位为 ultimate 兜底) |
 | `codes` | `string[]` | `[QUOTA, RATE_LIMIT, SERVER]` | 触发回退的失败码 |
 | `codeLabels` | `dict` | 中文标签 | 通知文案 |
-| `usageFile` | `string` | `~/.dsh/plugins/ark-fallback/usage.json` | usage 快照路径(monitor-usage.ps1 产出) |
+| `usageFile` | `string` | `~/.dsh/plugins/llm-fallback/usage.json` | usage 快照路径(monitor-usage.ps1 产出) |
 | `usageRefreshMs` | `number` | `60000` | usage 刷新间隔 |
 | `rateLimitCooldownMs` | `number` | `30min` | RATE_LIMIT 冷却(非商汤) |
 | `quotaCooldownMs` | `number` | `60min` | QUOTA 冷却(无重置时间时) |

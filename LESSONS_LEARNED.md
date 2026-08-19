@@ -50,7 +50,7 @@ jobs.build:
 
 ```bash
 # 1. 本地终端（非 DSH 沙箱）
-cd F:\YFY\Notebook\dsh-llm-fallback
+cd F:\code\dsh-llm-fallback
 
 # 2. 改代码、提交
 git add . && git commit -m "feat: ..."
