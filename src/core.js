@@ -86,17 +86,6 @@ export function routeUnavailable(provider, model, cooldowns, usage, cfg) {
 }
 
 /**
- * 选择回退目标:优先级 1 同 provider 其它 model → 2 同渠道族其它 provider → 3 跨族按链序。
- * 链末位(ultimate)默认永远可用,避免真实失败被吞成死循环。
- * @param {string} skipProvider - 刚失败的 provider
- * @param {string} skipModel - 刚失败的 model
- * @param {Array} chain - [{ provider, model }, ...]
- * @param {Map} cooldowns
- * @param {object|null} usage
- * @param {object} cfg - { arkThreshold, skipUltimateByUsage }
- * @returns {{provider:string, model:string}|null}
- */
-/**
  * 校验并归一化 chain 数组(拖拽排序持久化的新顺序)。
  * @param {unknown} value
  * @returns {Array<{provider:string, model:string}>|null} 合法返回数组,否则 null

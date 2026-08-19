@@ -11,7 +11,7 @@
 ## 功能
 
 - **证据驱动回退**:失败码触发重试,按优先级选链上「既未冷却又未被 usage 标记不可用」的首个路由;链末位(DeepSeek 官方)永远兜底,真实失败不会被吞成死循环
-- **渠道族优先**:同 provider 换 model → 同渠道族换 provider(商汤①→②③、火山①→②)→ 跨族按链序
+- **严格链序回退**:chain 顺序即完整回退优先级,每次失败后从链首扫描第一个「可用且非刚失败路由」;拖拽排序即全局重排。链末位(DeepSeek 官方)永远兜底,真实失败不吞成死循环
 - **零 Token 被动监测**:商汤可用性从真实请求结果推断(成功清冷却、触发码失败设冷却),火山方舟额度来自控制面 plan 快照(`tools/monitor-usage.ps1`,不耗推理 Token)
 - **分级冷却**:QUOTA(至额度重置)/ RATE_LIMIT(商汤短冷却 5min,其余 30min)/ SERVER(短冷却 10min);上游 `providerRetryAfterMs` 优先
 - **自动跳过冷却渠道**:用户手动选的 provider/model 正在冷却时,请求自动重定向到首个可用渠道
@@ -53,7 +53,7 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | 选项 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `chain` | `[{provider, model}]` | 见源码 | 回退链(按优先级;末位为 ultimate 兜底) |
-| `codes` | `string[]` | `[QUOTA, RATE_LIMIT, SERVER]` | 触发回退的失败码 |
+| `codes` | `string[]` | `[QUOTA, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT]` | 触发回退的失败码 |
 | `codeLabels` | `dict` | 中文标签 | 通知文案 |
 | `usageFile` | `string` | `~/.dsh/plugins/llm-fallback/usage.json` | usage 快照路径(monitor-usage.ps1 产出) |
 | `usageRefreshMs` | `number` | `60000` | usage 刷新间隔 |
