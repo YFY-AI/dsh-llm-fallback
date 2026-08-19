@@ -1,6 +1,6 @@
 {
   "name": "@yfy-ai/dsh-llm-fallback",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "DSH 请求管线级多渠道自动回退(usage 感知/分级冷却/渠道族优先)+ 侧边栏模型渠道",
   "author": "YFY-AI",
   "license": "MIT",
