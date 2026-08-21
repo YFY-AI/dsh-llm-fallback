@@ -74,6 +74,10 @@ export const Config = z.object({
   autoAvoidTruncation: z.boolean().default(true),
   sensenovaRateLimitCooldownMs: z.number().default(30 * 60 * 1000),
   stripReasoningFor: z.array(z.string()).default([
+    // supportsReasoningEffort:false 的 provider(settings.yaml llm-pi-ai compat):
+    // 发 reasoningEffort 会让 pi-ai 适配器送 thinking:{type:"enabled"} 却不带
+    // reasoning_effort,DeepSeek 类 API 直接 400(enabled 必须配非 none effort)。
+    'volcengine-ark', 'volcengine-ark-2',
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
     'nexusvai',
   ]),
@@ -591,9 +595,18 @@ export function apply(ctx, config) {
           }
         }
       }
-      // 不支持 reasoning effort 的渠道(nexusvai 等 proxy / 商汤 / 幻城)去掉该字段,否则下游拒接
-      if (nextConfig.reasoningEffort && stripReasoningFor.has(nextConfig.provider)) {
+      // 不支持 reasoning effort 的渠道(supportsReasoningEffort:false 的 pi-ai provider —
+      // 火山方舟①/②、商汤、幻城 — 及 nexusvai 等 proxy)去掉该字段,否则下游拒接:
+      // 发 effort 会让适配器送 thinking:{type:"enabled"} 却不带 reasoning_effort,
+      // DeepSeek 类 API 直接 400("enabled when reasoning effort is not none")。
+      if (stripReasoningFor.has(nextConfig.provider) && nextConfig.reasoningEffort) {
         delete nextConfig.reasoningEffort
+      }
+      // 一致性兜底:若请求配置里宿主已带 thinking 字段,强制与 reasoning 状态匹配
+      // (DeepSeek 类 API 强约束:thinking=disabled ⟺ reasoning_effort=none)。
+      if (nextConfig.thinking && typeof nextConfig.thinking === 'object' && typeof nextConfig.thinking.type === 'string') {
+        const eff = nextConfig.reasoningEffort
+        nextConfig.thinking.type = eff && eff !== 'none' ? 'enabled' : 'disabled'
       }
       // 不在此清冷却(请求尚未发出);记录派发时间(延迟近似基准)+ 当前渠道
       requestStartBySession.set(payload.agent.session, { at: Date.now() })

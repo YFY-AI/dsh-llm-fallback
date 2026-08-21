@@ -63,7 +63,7 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | `sensenovaRateLimitCooldownMs` | `number` | `5min` | 商汤 RATE_LIMIT 冷却(短时限流) |
 | `arkUsedPercentThreshold` | `number` | `85` | 方舟 5h 用量超此百分比视为不可用 |
 | `skipUltimateByUsage` | `boolean` | `false` | ultimate 路由是否也受可用性约束 |
-| `stripReasoningFor` | `string[]` | 商汤/幻城 | 自动去掉 reasoning effort 的渠道 |
+| `stripReasoningFor` | `string[]` | 火山方舟/商汤/幻城 | 自动去掉 reasoning effort 的渠道 |
 | `statusPath` | `string` | `/api/llm-fallback/status` | 状态 API 路径 |
 | `chainFile` | `string` | `~/.dsh/plugins/llm-fallback/chain.json` | 拖拽排序持久化文件(优先级高于 config.chain) |
 | `truncateCooldownMs` | `number` | `30min` | 输出截断冷却:渠道被截断后此期间自动避让 |
@@ -76,7 +76,8 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 
 - **免费代理类渠道(如 `nexusvai`)不推荐纳入回退链**。这类渠道普遍:模型 id 命名不规则(需带 `nexusvai:` 前缀,如 `nexusvai:minimax-m3-free`,漏前缀会 404 `model_not_found`)、稳定性差(易额度耗尽/下线)、且多不支持 `reasoning effort`。一旦选中会频繁触发失败,反而拖累回退体验。
 - **每个渠道的 `model` 必须与目标 provider 实际提供的 id 完全一致**。把 A 渠道的模型名误配给 B 渠道会直接 404。不确定时以对应 provider 官方/控制台列出的模型 id 为准。
-- **`stripReasoningFor` 是"不支持 reasoning effort 的渠道"黑名单**(默认含商汤/幻城/nexusvai)。接入新的免费代理且它不支持 reasoning 时,记得把它加进该配置项,否则切换过去会因 `does not support reasoning effort` 被下游拒接。
+- **`stripReasoningFor` 是"不支持 reasoning effort 的渠道"黑名单**(默认含火山方舟①/②、商汤、幻城、nexusvai)。接入新的免费代理且它不支持 reasoning 时,记得把它加进该配置项,否则切换过去会因 `does not support reasoning effort` 被下游拒接。
+- **`supportsReasoningEffort: false` 的 provider 必须进黑名单**。DSH 的 pi-ai 适配器对这类 provider(`thinkingFormat: deepseek`)只在收到 effort 时发 `thinking: {type: "enabled"}`,却因不支持而不发 `reasoning_effort`;DeepSeek 类 API 强约束 `thinking: enabled ⟺ reasoning_effort ≠ none`,于是直接 400 `invalid thinking type`。漏掉一个这类 provider(如之前的火山方舟)就会在回退到它时报错——**接入新 provider 时同步核对 settings.yaml 里它的 `compat.supportsReasoningEffort`,为 false 就补进黑名单**。
 
 ## 侧边栏「模型渠道」Tab
 
