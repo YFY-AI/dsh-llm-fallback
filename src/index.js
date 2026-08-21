@@ -268,8 +268,19 @@ export function apply(ctx, config) {
       usage = null
     }
   }
+
+  /** 周期性 GC:清理过期冷却/截断标记与陈旧 session 路由,避免长期运行内存无界增长。 */
+  function gcMaps() {
+    const now = Date.now()
+    for (const [k, c] of cooldowns) if (c.until <= now) cooldowns.delete(k)
+    for (const [k, t] of truncated) if (t <= now) truncated.delete(k)
+    const stale = 30 * 60 * 1000
+    for (const [k, v] of currentRouteBySessionId) if (!v.at || v.at < now - stale) currentRouteBySessionId.delete(k)
+    for (const [k, v] of forcedRouteBySession) if (!v.at || v.at < now - stale) forcedRouteBySession.delete(k)
+  }
+
   refreshUsage()
-  const disposeTimer = ctx.setInterval?.(refreshUsage, resolved.usageRefreshMs)
+  const disposeTimer = ctx.setInterval?.(() => { refreshUsage(); gcMaps() }, resolved.usageRefreshMs)
 
   // ---- 每5分钟调用 PowerShell 脚本更新 usage.json (替代 Windows 计划任务,无弹窗) ----
   const monitorScript = join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'monitor-usage.ps1')
@@ -494,7 +505,7 @@ export function apply(ctx, config) {
           if (!chain.some((r) => r.provider === provider && r.model === model)) {
             return send(400, { ok: false, error: 'route not in chain' })
           }
-          forcedRouteBySession.set(sessionId, { provider, model })
+          forcedRouteBySession.set(sessionId, { provider, model, at: Date.now() })
           pushEvent({ kind: 'manual', provider, model })
           send(200, { ok: true, provider, model })
         })
@@ -602,6 +613,7 @@ export function apply(ctx, config) {
         currentRouteBySessionId.set(sid, {
           provider: nextConfig.provider,
           model: nextConfig.model ?? '',
+          at: Date.now(),
         })
       }
       return nextConfig
