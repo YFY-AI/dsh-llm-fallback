@@ -240,6 +240,11 @@ export function apply(ctx, config) {
       const raw = readFileSync(usageFile, 'utf8')
       const clean = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
       usage = JSON.parse(clean)
+      // usage 陈旧保护:monitor 停止超过 10min 视为失效,避免方舟被永久误判不可用
+      if (usage?.updated_at) {
+        const age = Date.now() - Date.parse(usage.updated_at)
+        if (Number.isFinite(age) && age > 10 * 60 * 1000) usage = null
+      }
       // 零 token 恢复:任一方舟窗口从近耗尽(>=90%)掉回舒适(<80%)视为额度重置
       const ark = usage?.ark
       if (ark) {
@@ -248,8 +253,11 @@ export function apply(ctx, config) {
           if (!w || typeof w.percent !== 'number') continue
           const prev = prevArkPct[label]
           if (prev !== null && prev >= 90 && w.percent < 80) {
+            // 注意 cooldowns key 为 `provider|model`,需按前缀遍历删除,而非裸 provider 名
             for (const p of ['volcengine-ark', 'volcengine-ark-2']) {
-              cooldowns.delete(p)
+              for (const k of [...cooldowns.keys()]) {
+                if (k === p || k.startsWith(p + '|')) cooldowns.delete(k)
+              }
             }
             pushEvent({ kind: 'recover', provider: 'volcengine-ark', note: `方舟 ${label} 用量回落至 ${w.percent}%` })
           }
