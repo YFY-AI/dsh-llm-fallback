@@ -2,6 +2,35 @@
 
 本文件记录 `@yfy-ai/dsh-llm-fallback` 的所有重要变更。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## [0.8.7] - 2026-08-21
+
+> 修复版本。
+
+### 修复
+- `src/index.js`：修复切换模型/渠道到 `nexusvai` 等不支持 `reasoning effort` 的 provider 时，请求仍携带 `reasoningEffort: "high"` 被下游拒接的 BUG（`provider "nexusvai" model "claude-opus-4.8-free" does not support reasoning effort "high"`）。将 `nexusvai` 加入 `stripReasoningFor` 默认黑名单（`sensenova-*` / `hcnsec-*` 之外），路由到该 provider 时自动剥离 `reasoningEffort`，覆盖 fallback / 手动强制切换 / 直接选为主渠道三种场景。
+- 更新剥离逻辑注释，准确说明适用范围（proxy / 商汤 / 幻城类渠道）。
+
+## [0.8.6] - 2026-08-19
+
+> CI 升级版本，无功能变更。
+
+### CI
+- `.github/workflows/release.yml`：`softprops/action-gh-release@v2` → `@v3`（v3 运行时为 Node 24，消除最后一条 Node 20 弃用告警）。
+
+## [0.8.5] - 2026-08-19
+
+> CI 升级版本，无功能变更。
+
+### CI
+- `.github/workflows/release.yml`：`actions/checkout@v4` / `actions/setup-node@v4` → `@v7`，`node-version` 20 → 24，消除 Node 20 弃用告警。
+
+## [0.8.4] - 2026-08-19
+
+> 文档版本，无功能变更。
+
+### 文档
+- 新增根目录 `CHANGELOG.md`。
+
 ## [0.8.3] - 2026-08-19
 
 > 文档与注释清理版本，**无功能变更、无 API / 配置项变化**。

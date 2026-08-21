@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from '
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import {
   avoidTruncated,
   cooldownFor,
@@ -75,6 +76,7 @@ export const Config = z.object({
   sensenovaRateLimitCooldownMs: z.number().default(30 * 60 * 1000),
   stripReasoningFor: z.array(z.string()).default([
     'sensenova-1', 'sensenova-2', 'sensenova-3', 'hcnsec-1', 'hcnsec-2',
+    'nexusvai',
   ]),
   // 注:schemastery 的 object 字段天然可选(zod 才需要 .optional())
   apiKey: z.string(),
@@ -260,6 +262,31 @@ export function apply(ctx, config) {
   }
   refreshUsage()
   const disposeTimer = ctx.setInterval?.(refreshUsage, resolved.usageRefreshMs)
+
+  // ---- 每5分钟调用 PowerShell 脚本更新 usage.json (替代 Windows 计划任务,无弹窗) ----
+  const monitorScript = join(homedir(), '.dsh', 'plugins', 'llm-fallback', 'monitor-usage.ps1')
+  function updateUsageFile() {
+    try {
+      if (!existsSync(monitorScript)) return
+      execFile('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive',
+        '-WindowStyle', 'Hidden',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', monitorScript,
+        '-UsageFile', usageFile,
+      ], { timeout: 30000 }, (error) => {
+        if (error) {
+          ctx.logger?.warn?.(`[dsh-llm-fallback] usage update failed: ${error.message}`)
+        } else {
+          ctx.logger?.info?.('[dsh-llm-fallback] usage.json refreshed (zero-token)')
+        }
+      })
+    } catch (error) {
+      ctx.logger?.warn?.(`[dsh-llm-fallback] updateUsageFile error: ${error.message}`)
+    }
+  }
+  updateUsageFile() // 启动时立即刷新一次
+  const disposeUpdateTimer = ctx.setInterval?.(updateUsageFile, 5 * 60 * 1000)
 
   // ---- 冷却状态:cooldownKey(provider|model) -> { until, reason } ----
   const cooldowns = new Map()
@@ -519,9 +546,12 @@ export function apply(ctx, config) {
         nextConfig = { ...resolved }
       }
       // 手动"用此渠道":一次性强制路由(侧边栏按钮),最高优先,跳过自动冷却/截断避让
-      const forced = forcedRouteBySession.get(payload.agent.session)
+      // 注意:forcedRouteBySession 以字符串 sessionId 为 key(POST /route 写入),
+      // 此处必须用 sessionIdOf() 把 session 对象转成同款字符串 key,否则对象≠字符串永远取不到
+      const forcedSid = sessionIdOf(payload.agent.session)
+      const forced = forcedSid ? forcedRouteBySession.get(forcedSid) : void 0
       if (forced && forced.provider && forced.model) {
-        forcedRouteBySession.delete(payload.agent.session)
+        forcedRouteBySession.delete(forcedSid)
         nextConfig = { ...nextConfig, provider: forced.provider, model: forced.model }
       } else {
         // 自动跳过冷却中的渠道:用户选的 provider/model 正在冷却则重定向到链上第一个可用渠道
@@ -543,7 +573,7 @@ export function apply(ctx, config) {
           }
         }
       }
-      // 不支持 reasoning effort 的渠道去掉该字段(商汤/幻城)
+      // 不支持 reasoning effort 的渠道(nexusvai 等 proxy / 商汤 / 幻城)去掉该字段,否则下游拒接
       if (nextConfig.reasoningEffort && stripReasoningFor.has(nextConfig.provider)) {
         delete nextConfig.reasoningEffort
       }
@@ -623,6 +653,7 @@ export function apply(ctx, config) {
     disposeRequest()
     disposeTurnEnd()
     disposeTimer?.()
+    disposeUpdateTimer?.()
     disposeStatusRoute()
     disposeBalance?.()
   }
