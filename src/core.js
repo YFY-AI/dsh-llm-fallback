@@ -1,16 +1,6 @@
 // dsh-llm-fallback core:纯函数回退决策逻辑(从生产 mjs 抽取,可独立测试)。
 // 不依赖任何外部状态:cooldowns / usage / chain 全部显式传入。
 
-/**
- * 渠道族:同族优先回退(商汤①→②③、火山①→②),跨族只作最后手段。
- */
-export function providerFamily(provider) {
-  if (provider.startsWith('volcengine-ark')) return 'volcengine'
-  if (provider.startsWith('hcnsec')) return 'hcnsec'
-  if (provider.startsWith('sensenova')) return 'sensenova'
-  return provider
-}
-
 /** 渠道显示名(状态 API / 侧边栏 / UI 通知)。 */
 export function displayNameOf(provider) {
   const map = {

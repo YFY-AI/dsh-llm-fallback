@@ -20,7 +20,6 @@ import {
   cooldownKey,
   displayNameOf,
   pickFallbackTarget,
-  providerFamily,
   pushWindowMetric,
   routeUnavailable,
   validateChain,

@@ -7,20 +7,11 @@ import {
   cooldownKey,
   displayNameOf,
   pickFallbackTarget,
-  providerFamily,
   pushWindowMetric,
   routeUnavailable,
   validateChain,
   windowSummary,
 } from '../lib/core.js'
-
-// ── providerFamily ──
-assert.equal(providerFamily('volcengine-ark'), 'volcengine')
-assert.equal(providerFamily('volcengine-ark-2'), 'volcengine')
-assert.equal(providerFamily('sensenova-1'), 'sensenova')
-assert.equal(providerFamily('hcnsec-1'), 'hcnsec')
-assert.equal(providerFamily('deepseek-official'), 'deepseek-official')
-console.log('✔ providerFamily')
 
 // ── displayNameOf ──
 assert.equal(displayNameOf('volcengine-ark'), '火山方舟①')
