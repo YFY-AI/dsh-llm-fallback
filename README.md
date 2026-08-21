@@ -70,6 +70,14 @@ npm i @yfy-ai/dsh-llm-fallback --registry=https://npm.pkg.github.com/
 | `autoAvoidTruncation` | `boolean` | `true` | 启用截断自动避让(下次请求自动切下一可用渠道) |
 | `apiKey` | `string` | - | 余额查询 key(默认读 `DEEPSEEK_API_KEY`) |
 
+## 渠道稳定性建议
+
+回退链的稳定性取决于每个渠道自身可靠性。根据实测经验:
+
+- **免费代理类渠道(如 `nexusvai`)不推荐纳入回退链**。这类渠道普遍:模型 id 命名不规则(需带 `nexusvai:` 前缀,如 `nexusvai:minimax-m3-free`,漏前缀会 404 `model_not_found`)、稳定性差(易额度耗尽/下线)、且多不支持 `reasoning effort`。一旦选中会频繁触发失败,反而拖累回退体验。
+- **每个渠道的 `model` 必须与目标 provider 实际提供的 id 完全一致**。把 A 渠道的模型名误配给 B 渠道会直接 404。不确定时以对应 provider 官方/控制台列出的模型 id 为准。
+- **`stripReasoningFor` 是"不支持 reasoning effort 的渠道"黑名单**(默认含商汤/幻城/nexusvai)。接入新的免费代理且它不支持 reasoning 时,记得把它加进该配置项,否则切换过去会因 `does not support reasoning effort` 被下游拒接。
+
 ## 侧边栏「模型渠道」Tab
 
 安装 `dsh-better-sidebar` 后,插件会在侧边栏注册「模型渠道」Tab 并自动打开(**官方 GUI 版与第三方桌面版均支持**):
